@@ -1,44 +1,67 @@
+plugins:
+    - rubocop-minitest
+    - rubocop-performance
+    - rubocop-rake
+    - rubocop-thread_safety
+
 AllCops:
-  TargetRubyVersion: 3.2
-  NewCops: enable
-  SuggestExtensions: false
-  Exclude:
-    - 'vendor/**/*'
-    - 'tmp/**/*'
-    - 'pkg/**/*'
+    TargetRubyVersion: '3.2'
+    NewCops: enable
+    SuggestExtensions: false
+    Exclude:
+        - 'vendor/**/*'
+        - 'tmp/**/*'
+        - 'pkg/**/*'
 
-Layout/LineLength:
-  Max: 120
-
-Metrics/BlockLength:
-  Exclude:
-    - 'test/**/*'
-    - '*.gemspec'
-
-Metrics/ClassLength:
-  Exclude:
-    - 'test/**/*'
-
-Metrics/MethodLength:
-  Exclude:
-    - 'test/**/*'
-
+# Metrics are too arbitrary.
 Metrics/AbcSize:
-  Exclude:
-    - 'test/**/*'
+    Enabled: false
+Metrics/ClassLength:
+    Enabled: false
+Layout/LineLength:
+    Enabled: false
+Metrics/MethodLength:
+    Enabled: false
 
-Style/Documentation:
-  Enabled: false
+# Weird.
+Style/FormatStringToken:
+    Enabled: false
+Style/NumericPredicate:
+    Enabled: false
 
-Style/StringLiterals:
-  EnforcedStyle: single_quotes
-
-Style/FrozenStringLiteralComment:
-  Enabled: true
+# Trailing commas are good.
+Style/TrailingCommaInArguments:
+    Enabled: false
+Style/TrailingCommaInArrayLiteral:
+    Enabled: false
+Style/TrailingCommaInHashLiteral:
+    Enabled: false
 
 Gemspec/DevelopmentDependencies:
-  Enabled: false
+    Enabled: false
+
+# Sometimes it makes sense to have lots of assertions.
+Minitest/MultipleAssertions:
+    Enabled: false
+
+ThreadSafety/NewThread:
+    Exclude:
+        - 'test/**/*'
+
+# Iterator yields tuples [network, data], not a hash
+Style/HashEachMethods:
+    Enabled: false
+
+# Project-specific
+Style/Documentation:
+    Enabled: false
+
+Style/StringLiterals:
+    EnforcedStyle: single_quotes
+
+Style/FrozenStringLiteralComment:
+    Enabled: true
 
 Lint/EmptyClass:
-  Exclude:
-    - 'lib/maxmind/db/rust.rb'
+    Exclude:
+        - 'lib/maxmind/db/rust.rb'

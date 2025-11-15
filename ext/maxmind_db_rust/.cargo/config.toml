@@ -1,2 +1,5 @@
+# TODO: This configuration is Linux x86_64-specific and causes macOS ARM64 builds to fail
+# Need to make this platform-conditional or handle via build.rs
+# For now, this works on Linux but may need adjustment for other platforms
 [env]
 BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/lib/gcc/x86_64-linux-gnu/14/include"

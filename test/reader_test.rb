@@ -17,7 +17,7 @@ class ReaderTest < Minitest::Test
 
   def test_invalid_database_error_exists
     assert defined?(MaxMind::DB::Rust::InvalidDatabaseError)
-    assert MaxMind::DB::Rust::InvalidDatabaseError < RuntimeError
+    assert_operator MaxMind::DB::Rust::InvalidDatabaseError, :<, RuntimeError
   end
 
   def test_metadata_class_exists
@@ -28,9 +28,11 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: MaxMind::DB::Rust::MODE_MEMORY)
+
     refute_nil reader
     refute reader.closed
     reader.close
+
     assert reader.closed
   end
 
@@ -38,6 +40,7 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: MaxMind::DB::Rust::MODE_MMAP)
+
     refute_nil reader
     refute reader.closed
     reader.close
@@ -47,6 +50,7 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: MaxMind::DB::Rust::MODE_AUTO)
+
     refute_nil reader
     reader.close
   end
@@ -55,6 +59,7 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
     refute_nil reader
     reader.close
   end
@@ -111,8 +116,8 @@ class ReaderTest < Minitest::Test
     _record, prefix_len = reader.get_with_prefix_length('1.1.1.1')
 
     assert_kind_of Integer, prefix_len
-    assert prefix_len >= 0
-    assert prefix_len <= 32
+    assert_operator prefix_len, :>=, 0
+    assert_operator prefix_len, :<=, 32
 
     reader.close
   end
@@ -155,13 +160,16 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
     refute reader.closed
 
     reader.close
+
     assert reader.closed
 
     # Closing again should be idempotent
     reader.close
+
     assert reader.closed
   end
 
@@ -205,7 +213,7 @@ class ReaderTest < Minitest::Test
       break if count >= 5 # Just test first 5 entries
     end
 
-    assert count.positive?
+    assert_predicate count, :positive?
 
     reader.close
   end
@@ -217,6 +225,7 @@ class ReaderTest < Minitest::Test
 
     # Test Enumerable methods
     first_three = reader.take(3)
+
     assert_equal 3, first_three.length
 
     first_three.each do |network, _data|
@@ -236,6 +245,7 @@ class ReaderTest < Minitest::Test
     networks = []
     reader.each('214.0.0.0/8') do |network, data|
       networks << network.to_s
+
       assert_kind_of IPAddr, network
       assert(data.nil? || data.is_a?(Hash))
 
@@ -244,7 +254,7 @@ class ReaderTest < Minitest::Test
     end
 
     # Should find some networks in this range
-    assert networks.length.positive?, 'Should find networks in 214.0.0.0/8'
+    assert_predicate networks.length, :positive?, 'Should find networks in 214.0.0.0/8'
 
     reader.close
   end
@@ -259,11 +269,12 @@ class ReaderTest < Minitest::Test
     networks = []
     reader.each(subnet) do |network, _data|
       networks << network.to_s
+
       assert_kind_of IPAddr, network
     end
 
     # Should find at least one network in this specific subnet
-    assert networks.length.positive?, 'Should find networks in 81.2.69.0/24'
+    assert_predicate networks.length, :positive?, 'Should find networks in 81.2.69.0/24'
 
     reader.close
   end
@@ -277,9 +288,10 @@ class ReaderTest < Minitest::Test
     networks = []
     reader.each('2001::/16') do |network, _data|
       networks << network.to_s
+
       assert_kind_of IPAddr, network
       # Verify network is IPv6 and within range
-      assert network.ipv6?, 'Network should be IPv6'
+      assert_predicate network, :ipv6?, 'Network should be IPv6'
       assert network.to_s.start_with?('2001:'), "Network #{network} should be in 2001::/16"
     end
 
@@ -328,6 +340,7 @@ class ReaderTest < Minitest::Test
     count = 0
     reader.each('240.0.0.0/8') do |network, data|
       count += 1
+
       assert_kind_of IPAddr, network
       assert(data.nil? || data.is_a?(Hash))
     end
@@ -351,7 +364,7 @@ class ReaderTest < Minitest::Test
         break if networks.length >= 3 # Just test first 3
       end
 
-      assert networks.length.positive?, "Should find networks in mode #{mode}"
+      assert_predicate networks.length, :positive?, "Should find networks in mode #{mode}"
 
       reader.close
     end
@@ -374,13 +387,12 @@ class ReaderTest < Minitest::Test
     end
 
     # Subset should be less than or equal to all
-    assert subset_networks.length <= all_networks.length,
-           'Subset should have fewer or equal networks than full database'
+    assert_operator subset_networks.length, :<=, all_networks.length, 'Subset should have fewer or equal networks than full database'
 
     # All subset networks should be in the all networks list
     subset_networks.each do |net|
-      assert all_networks.include?(net),
-             "Network #{net} from subset should be in full database"
+      assert_includes all_networks, net,
+                      "Network #{net} from subset should be in full database"
     end
 
     reader.close

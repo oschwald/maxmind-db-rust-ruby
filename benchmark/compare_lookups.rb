@@ -48,18 +48,18 @@ def generate_random_ipv4
 end
 
 def generate_random_ipv6
-  parts = 8.times.map { format('%x', rand(0..0xffff)) }
+  parts = Array.new(8) { format('%x', rand(0..0xffff)) }
   parts.join(':')
 end
 
 def generate_test_ips(count, ipv6: false)
-  count.times.map do
+  Array.new(count) do
     ipv6 ? generate_random_ipv6 : generate_random_ipv4
   end
 end
 
-puts "MaxMind DB Benchmark: Official vs Rust Implementation"
-puts "=" * 70
+puts 'MaxMind DB Benchmark: Official vs Rust Implementation'
+puts '=' * 70
 puts "Database: #{DB_PATH}"
 puts "Iterations: #{ITERATIONS}"
 puts
@@ -73,12 +73,20 @@ ipv6 = false
 if ip_version == 6
   # Sample 100 random IPs of each type to check coverage
   ipv4_hits = 100.times.count do
-    result = rust_reader.get(generate_random_ipv4) rescue nil
+    result = begin
+      rust_reader.get(generate_random_ipv4)
+    rescue StandardError
+      nil
+    end
     !result.nil?
   end
 
   ipv6_hits = 100.times.count do
-    result = rust_reader.get(generate_random_ipv6) rescue nil
+    result = begin
+      rust_reader.get(generate_random_ipv6)
+    rescue StandardError
+      nil
+    end
     !result.nil?
   end
 
@@ -100,14 +108,14 @@ puts
 # Generate test IPs
 puts "Generating #{ITERATIONS} random IP#{ipv6 ? 'v6' : 'v4'} addresses..."
 test_ips = generate_test_ips(ITERATIONS, ipv6: ipv6)
-puts "Done."
+puts 'Done.'
 puts
 
 # Benchmark both implementations
 results = {}
 
 if OFFICIAL_AVAILABLE
-  puts "Benchmarking official MaxMind::DB::Reader..."
+  puts 'Benchmarking official MaxMind::DB::Reader...'
 
   # Test with MODE_FILE (official gem's default, uses mmap internally)
   official_reader = MaxMind::DB.new(DB_PATH, mode: MaxMind::DB::MODE_FILE)
@@ -129,7 +137,7 @@ if OFFICIAL_AVAILABLE
   puts
 end
 
-puts "Benchmarking MaxMind::DB::Rust::Reader (MMAP mode)..."
+puts 'Benchmarking MaxMind::DB::Rust::Reader (MMAP mode)...'
 
 rust_reader_mmap = MaxMind::DB::Rust::Reader.new(DB_PATH, mode: MaxMind::DB::Rust::MODE_MMAP)
 
@@ -149,7 +157,7 @@ puts "  #{time}"
 puts "  Lookups/sec: #{(ITERATIONS / time.real).round(2)}"
 puts
 
-puts "Benchmarking MaxMind::DB::Rust::Reader (Memory mode)..."
+puts 'Benchmarking MaxMind::DB::Rust::Reader (Memory mode)...'
 
 rust_reader_memory = MaxMind::DB::Rust::Reader.new(DB_PATH, mode: MaxMind::DB::Rust::MODE_MEMORY)
 
@@ -170,38 +178,38 @@ puts "  Lookups/sec: #{(ITERATIONS / time.real).round(2)}"
 puts
 
 # Summary comparison
-puts "=" * 70
-puts "SUMMARY"
-puts "=" * 70
+puts '=' * 70
+puts 'SUMMARY'
+puts '=' * 70
 
 if OFFICIAL_AVAILABLE
   official_rate = ITERATIONS / results[:official].real
   rust_mmap_rate = ITERATIONS / results[:rust_mmap].real
   rust_memory_rate = ITERATIONS / results[:rust_memory].real
 
-  puts format("Official (FILE):      %10.2f lookups/sec", official_rate)
-  puts format("Rust (MMAP):          %10.2f lookups/sec (%.2fx)",
+  puts format('Official (FILE):      %10.2f lookups/sec', official_rate)
+  puts format('Rust (MMAP):          %10.2f lookups/sec (%.2fx)',
               rust_mmap_rate, rust_mmap_rate / official_rate)
-  puts format("Rust (Memory):        %10.2f lookups/sec (%.2fx)",
+  puts format('Rust (Memory):        %10.2f lookups/sec (%.2fx)',
               rust_memory_rate, rust_memory_rate / official_rate)
   puts
 
   if rust_mmap_rate > official_rate
-    improvement = ((rust_mmap_rate / official_rate - 1) * 100).round(1)
+    improvement = (((rust_mmap_rate / official_rate) - 1) * 100).round(1)
     puts "🚀 Rust (MMAP) is #{improvement}% faster than official gem"
   end
 
   if rust_memory_rate > rust_mmap_rate
-    improvement = ((rust_memory_rate / rust_mmap_rate - 1) * 100).round(1)
+    improvement = (((rust_memory_rate / rust_mmap_rate) - 1) * 100).round(1)
     puts "💾 Rust Memory mode is #{improvement}% faster than MMAP mode"
   end
 else
   rust_mmap_rate = ITERATIONS / results[:rust_mmap].real
   rust_memory_rate = ITERATIONS / results[:rust_memory].real
 
-  puts format("Rust (MMAP):          %10.2f lookups/sec", rust_mmap_rate)
-  puts format("Rust (Memory):        %10.2f lookups/sec (%.2fx)",
+  puts format('Rust (MMAP):          %10.2f lookups/sec', rust_mmap_rate)
+  puts format('Rust (Memory):        %10.2f lookups/sec (%.2fx)',
               rust_memory_rate, rust_memory_rate / rust_mmap_rate)
   puts
-  puts "Note: Install maxmind-db gem to compare with official implementation"
+  puts 'Note: Install maxmind-db gem to compare with official implementation'
 end
