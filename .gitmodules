@@ -1,6 +1,3 @@
 [submodule "test/data/MaxMind-DB"]
 	path = test/data/MaxMind-DB
 	url = https://github.com/maxmind/MaxMind-DB.git
-[submodule "test/maxmind-db-reader-ruby"]
-	path = test/maxmind-db-reader-ruby
-	url = https://github.com/maxmind/MaxMind-DB-Reader-ruby.git

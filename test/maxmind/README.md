@@ -30,21 +30,20 @@ The tests have been adapted to work with the maxmind-db-rust implementation:
 
 To update these tests from the official repository:
 
-1. Check out the latest version in the submodule:
+1. Review recent changes in the upstream repository:
 
    ```bash
-   cd test/maxmind-db-reader-ruby
+   # Clone or update a local copy of the upstream repository
+   git clone https://github.com/maxmind/MaxMind-DB-Reader-ruby.git /tmp/maxmind-db-reader-ruby
+   cd /tmp/maxmind-db-reader-ruby
    git pull origin main
-   cd ../..
+
+   # View recent test changes
+   git log --oneline --since="6 months ago" test/
+   git diff HEAD~10..HEAD test/test_reader.rb
    ```
 
-2. Review changes to the test files:
-
-   ```bash
-   git diff test/maxmind-db-reader-ruby/test/
-   ```
-
-3. Manually apply relevant changes to the files in `test/maxmind/`, making
+2. Manually apply relevant changes to the files in `test/maxmind/`, making
    necessary adaptations for our implementation.
 
 ## Test Data

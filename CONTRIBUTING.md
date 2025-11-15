@@ -314,19 +314,21 @@ When adding new features or fixing bugs:
 
 When the official MaxMind-DB-Reader-ruby gem is updated:
 
-1. Update the submodule:
+1. Clone or update a local copy of the upstream repository:
 
    ```bash
-   cd test/maxmind-db-reader-ruby
+   # Clone to a temporary location
+   git clone https://github.com/maxmind/MaxMind-DB-Reader-ruby.git /tmp/maxmind-db-reader-ruby
+   cd /tmp/maxmind-db-reader-ruby
+
+   # Or update existing clone
    git pull origin main
-   cd ../..
-   git add test/maxmind-db-reader-ruby
    ```
 
 2. Review changes:
 
    ```bash
-   cd test/maxmind-db-reader-ruby
+   cd /tmp/maxmind-db-reader-ruby
    git log --oneline --since="3 months ago" -- test/
    git diff HEAD~10..HEAD -- test/test_reader.rb
    ```
