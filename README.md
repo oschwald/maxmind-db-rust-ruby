@@ -180,6 +180,7 @@ reader.close
 Create a new Reader instance.
 
 **Parameters:**
+
 - `database_path` (String): Path to the MaxMind DB file
 - `options` (Hash): Optional configuration
   - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_MEMORY`, or `:MODE_MMAP`
@@ -187,6 +188,7 @@ Create a new Reader instance.
 **Returns:** Reader instance
 
 **Raises:**
+
 - `Errno::ENOENT`: If the database file does not exist
 - `MaxMind::DB::Rust::InvalidDatabaseError`: If the file is not a valid MaxMind DB
 
@@ -195,11 +197,13 @@ Create a new Reader instance.
 Look up an IP address in the database.
 
 **Parameters:**
+
 - `ip_address` (String or IPAddr): The IP address to look up
 
 **Returns:** Hash with the record data, or `nil` if not found
 
 **Raises:**
+
 - `ArgumentError`: If looking up IPv6 in an IPv4-only database
 - `MaxMind::DB::Rust::InvalidDatabaseError`: If the database is corrupt
 
@@ -208,6 +212,7 @@ Look up an IP address in the database.
 Look up an IP address and return the prefix length.
 
 **Parameters:**
+
 - `ip_address` (String or IPAddr): The IP address to look up
 
 **Returns:** Array `[record, prefix_length]` where record is a Hash or `nil`
@@ -233,6 +238,7 @@ Check if the database has been closed.
 Iterate over networks in the database.
 
 **Parameters:**
+
 - `network` (String or IPAddr, optional): Network CIDR to iterate within (e.g., "192.168.0.0/16"). If omitted, iterates over all networks in the database.
 
 **Yields:** IPAddr network and Hash data for each entry
@@ -240,11 +246,13 @@ Iterate over networks in the database.
 **Returns:** Enumerator if no block given
 
 **Raises:**
+
 - `ArgumentError`: If network CIDR is invalid or IPv6 network specified for IPv4-only database
 
 ### `MaxMind::DB::Rust::Metadata`
 
 Metadata attributes:
+
 - `binary_format_major_version` - Major version of the binary format
 - `binary_format_minor_version` - Minor version of the binary format
 - `build_epoch` - Unix timestamp when the database was built
@@ -269,21 +277,22 @@ Metadata attributes:
 
 ## Comparison with Official Gem
 
-| Feature | maxmind-db (official) | maxmind-db-rust (this gem) |
-|---------|----------------------|---------------------------|
-| Implementation | Pure Ruby | Rust with Ruby bindings |
-| Performance | Baseline | 10-50x faster |
-| API | MaxMind::DB | MaxMind::DB::Rust |
-| MODE_FILE | ✓ | ✗ |
-| MODE_MEMORY | ✓ | ✓ |
-| MODE_AUTO | ✓ | ✓ |
-| MODE_MMAP | ✗ | ✓ |
-| Iterator support | ✗ | ✓ |
-| Thread-safe | ✓ | ✓ |
+| Feature          | maxmind-db (official) | maxmind-db-rust (this gem) |
+| ---------------- | --------------------- | -------------------------- |
+| Implementation   | Pure Ruby             | Rust with Ruby bindings    |
+| Performance      | Baseline              | 10-50x faster              |
+| API              | MaxMind::DB           | MaxMind::DB::Rust          |
+| MODE_FILE        | ✓                     | ✗                          |
+| MODE_MEMORY      | ✓                     | ✓                          |
+| MODE_AUTO        | ✓                     | ✓                          |
+| MODE_MMAP        | ✗                     | ✓                          |
+| Iterator support | ✗                     | ✓                          |
+| Thread-safe      | ✓                     | ✓                          |
 
 ## Performance
 
 Expected performance characteristics (will vary based on hardware):
+
 - Single-threaded lookups: 300,000 - 500,000 lookups/second
 - Significantly faster than pure Ruby implementations
 - Memory-mapped mode (MMAP) provides best performance

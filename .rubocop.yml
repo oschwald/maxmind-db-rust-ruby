@@ -1,67 +1,67 @@
 plugins:
-    - rubocop-minitest
-    - rubocop-performance
-    - rubocop-rake
-    - rubocop-thread_safety
+  - rubocop-minitest
+  - rubocop-performance
+  - rubocop-rake
+  - rubocop-thread_safety
 
 AllCops:
-    TargetRubyVersion: '3.2'
-    NewCops: enable
-    SuggestExtensions: false
-    Exclude:
-        - 'vendor/**/*'
-        - 'tmp/**/*'
-        - 'pkg/**/*'
+  TargetRubyVersion: "3.2"
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - "tmp/**/*"
+    - "pkg/**/*"
 
 # Metrics are too arbitrary.
 Metrics/AbcSize:
-    Enabled: false
+  Enabled: false
 Metrics/ClassLength:
-    Enabled: false
+  Enabled: false
 Layout/LineLength:
-    Enabled: false
+  Enabled: false
 Metrics/MethodLength:
-    Enabled: false
+  Enabled: false
 
 # Weird.
 Style/FormatStringToken:
-    Enabled: false
+  Enabled: false
 Style/NumericPredicate:
-    Enabled: false
+  Enabled: false
 
 # Trailing commas are good.
 Style/TrailingCommaInArguments:
-    Enabled: false
+  Enabled: false
 Style/TrailingCommaInArrayLiteral:
-    Enabled: false
+  Enabled: false
 Style/TrailingCommaInHashLiteral:
-    Enabled: false
+  Enabled: false
 
 Gemspec/DevelopmentDependencies:
-    Enabled: false
+  Enabled: false
 
 # Sometimes it makes sense to have lots of assertions.
 Minitest/MultipleAssertions:
-    Enabled: false
+  Enabled: false
 
 ThreadSafety/NewThread:
-    Exclude:
-        - 'test/**/*'
+  Exclude:
+    - "test/**/*"
 
 # Iterator yields tuples [network, data], not a hash
 Style/HashEachMethods:
-    Enabled: false
+  Enabled: false
 
 # Project-specific
 Style/Documentation:
-    Enabled: false
+  Enabled: false
 
 Style/StringLiterals:
-    EnforcedStyle: single_quotes
+  EnforcedStyle: single_quotes
 
 Style/FrozenStringLiteralComment:
-    Enabled: true
+  Enabled: true
 
 Lint/EmptyClass:
-    Exclude:
-        - 'lib/maxmind/db/rust.rb'
+  Exclude:
+    - "lib/maxmind/db/rust.rb"

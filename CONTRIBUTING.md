@@ -55,6 +55,7 @@ bundle exec rake compile
 ```
 
 This will:
+
 1. Run `extconf.rb` to generate the Makefile
 2. Compile the Rust code using rb-sys
 3. Place the compiled extension in `lib/maxmind/db/`
@@ -192,6 +193,7 @@ maxmind-db-rust-ruby/
 ### Workflow
 
 1. **Create a branch** for your changes:
+
    ```bash
    git checkout -b feature/my-new-feature
    ```
@@ -202,12 +204,14 @@ maxmind-db-rust-ruby/
    - Tests: Add tests in `test/` directory
 
 3. **Compile and test**:
+
    ```bash
    bundle exec rake compile
    bundle exec rake test
    ```
 
 4. **Check code quality**:
+
    ```bash
    bundle exec rubocop
    cd ext/maxmind_db_rust && cargo clippy && cargo fmt
@@ -227,6 +231,7 @@ maxmind-db-rust-ruby/
 - Reference issues and pull requests when relevant
 
 Example:
+
 ```
 Add support for custom metadata attributes
 
@@ -244,6 +249,7 @@ Fixes #123
 When adding new features or fixing bugs:
 
 1. **Add tests to our own test suite** (`test/*_test.rb`):
+
    ```ruby
    def test_new_feature
      reader = MaxMind::DB::Rust::Reader.new('path/to/test.mmdb')
@@ -254,6 +260,7 @@ When adding new features or fixing bugs:
    ```
 
 2. **Ensure existing tests pass**:
+
    ```bash
    bundle exec rake test
    ```
@@ -280,6 +287,7 @@ When adding new features or fixing bugs:
 When the official MaxMind-DB-Reader-ruby gem is updated:
 
 1. Update the submodule:
+
    ```bash
    cd test/maxmind-db-reader-ruby
    git pull origin main
@@ -288,6 +296,7 @@ When the official MaxMind-DB-Reader-ruby gem is updated:
    ```
 
 2. Review changes:
+
    ```bash
    cd test/maxmind-db-reader-ruby
    git log --oneline --since="3 months ago" -- test/
@@ -307,11 +316,13 @@ When the official MaxMind-DB-Reader-ruby gem is updated:
 ### Before Submitting a Pull Request
 
 1. **Ensure all tests pass**:
+
    ```bash
    bundle exec rake test
    ```
 
 2. **Run code quality checks**:
+
    ```bash
    bundle exec rubocop
    cd ext/maxmind_db_rust && cargo clippy && cargo fmt --check
@@ -331,6 +342,7 @@ When the official MaxMind-DB-Reader-ruby gem is updated:
 ### Pull Request Process
 
 1. **Push your branch**:
+
    ```bash
    git push origin feature/my-new-feature
    ```
@@ -361,28 +373,34 @@ We follow [Semantic Versioning](https://semver.org/):
 ### Creating a Release
 
 1. **Update version** in `maxmind-db-rust.gemspec`:
+
    ```ruby
    s.version = '0.2.0'
    ```
 
 2. **Update CHANGELOG.md**:
+
    ```markdown
    ## [0.2.0] - 2025-01-15
 
    ### Added
+
    - New feature X
 
    ### Fixed
+
    - Bug fix Y
    ```
 
 3. **Commit version bump**:
+
    ```bash
    git add maxmind-db-rust.gemspec CHANGELOG.md
    git commit -m "Bump version to 0.2.0"
    ```
 
 4. **Create and push tag**:
+
    ```bash
    git tag -a v0.2.0 -m "Release version 0.2.0"
    git push origin main
@@ -402,6 +420,7 @@ We follow [Semantic Versioning](https://semver.org/):
 When making performance-related changes:
 
 1. **Create benchmark script**:
+
    ```ruby
    require 'benchmark'
    require 'maxmind/db/rust'

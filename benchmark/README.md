@@ -13,6 +13,7 @@ ruby benchmark/compare_lookups.rb path/to/database.mmdb [iterations]
 ```
 
 **Arguments:**
+
 - `path/to/database.mmdb` - Required. Path to the MaxMind DB file to benchmark
 - `iterations` - Optional. Number of random IP lookups to perform (default: 10,000)
 
@@ -42,6 +43,7 @@ Then run the benchmark - it will automatically detect and compare both implement
 ### What it Measures
 
 The benchmark:
+
 - Generates random IP addresses (IPv4 or IPv6 based on database)
 - Performs lookups using both implementations (if available)
 - Measures total time and calculates lookups per second

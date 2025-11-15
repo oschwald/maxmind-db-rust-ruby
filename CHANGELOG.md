@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2025-11-15
 
 ### Added
+
 - Initial release
 - Reader class with `get()`, `get_with_prefix_length()`, `metadata()`, `close()`, and `closed()` methods
 - Metadata class with all standard MaxMind DB metadata attributes
@@ -22,5 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive API documentation
 
 ### Not Implemented
+
 - MODE_FILE support (use MODE_MMAP instead)
 - File descriptor support in constructor

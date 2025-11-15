@@ -12,12 +12,14 @@ Copyright (c) 2018-2025 MaxMind, Inc.
 Licensed under the Apache License, Version 2.0 or the MIT License, at your option.
 
 See the original repository for full license details:
+
 - Apache License 2.0: https://github.com/maxmind/MaxMind-DB-Reader-ruby/blob/main/LICENSE-APACHE
 - MIT License: https://github.com/maxmind/MaxMind-DB-Reader-ruby/blob/main/LICENSE-MIT
 
 ## Modifications
 
 The tests have been adapted to work with the maxmind-db-rust implementation:
+
 - Changed `require 'maxmind/db'` to `require 'maxmind/db/rust'`
 - Changed `MaxMind::DB` to `MaxMind::DB::Rust`
 - Removed `MODE_FILE` tests (not supported, use `MODE_MMAP` instead)
@@ -29,6 +31,7 @@ The tests have been adapted to work with the maxmind-db-rust implementation:
 To update these tests from the official repository:
 
 1. Check out the latest version in the submodule:
+
    ```bash
    cd test/maxmind-db-reader-ruby
    git pull origin main
@@ -36,6 +39,7 @@ To update these tests from the official repository:
    ```
 
 2. Review changes to the test files:
+
    ```bash
    git diff test/maxmind-db-reader-ruby/test/
    ```
