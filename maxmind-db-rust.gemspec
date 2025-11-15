@@ -4,10 +4,10 @@ Gem::Specification.new do |s|
   s.authors     = ['Gregory Oschwald']
   s.files       = Dir['lib/**/*.rb', 'ext/**/*.{rs,toml,rb}', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md']
   s.name        = 'maxmind-db-rust'
-  s.summary     = 'High-performance Rust-based MaxMind DB reader for Ruby'
+  s.summary     = 'Unofficial high-performance Rust-based MaxMind DB reader for Ruby'
   s.version     = '0.1.0'
 
-  s.description = 'A high-performance Rust-based gem for reading MaxMind DB files. Provides API compatibility with the official maxmind-db gem while leveraging Rust for superior performance. MaxMind DB is a binary file format that stores data indexed by IP address subnets (IPv4 or IPv6).'
+  s.description = 'An unofficial high-performance Rust-based gem for reading MaxMind DB files. Provides API compatibility with the official maxmind-db gem while leveraging Rust for superior performance. MaxMind DB is a binary file format that stores data indexed by IP address subnets (IPv4 or IPv6). This library is not endorsed by MaxMind.'
   s.email       = 'oschwald@gmail.com'
   s.homepage    = 'https://github.com/oschwald/maxminddb-rust-ruby'
   s.licenses    = ['ISC']

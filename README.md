@@ -5,6 +5,8 @@
 
 A high-performance Rust-based Ruby gem for reading MaxMind DB files. Provides API compatibility with the official `maxmind-db` gem while leveraging Rust for superior performance.
 
+> **Note:** This is an unofficial library and is not endorsed by MaxMind. For the official Ruby library, see [maxmind-db](https://github.com/maxmind/MaxMind-DB-Reader-ruby).
+
 ## Features
 
 - **High Performance**: Rust-based implementation provides significantly faster lookups than pure Ruby
