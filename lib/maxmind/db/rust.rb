@@ -44,7 +44,19 @@ module MaxMind
       #
       #   reader = MaxMind::DB::Rust::Reader.new('GeoLite2-Country.mmdb')
       #
+      #   # Iterate over all networks in the database
       #   reader.each do |network, data|
+      #     puts "#{network}: #{data['country']['iso_code']}"
+      #   end
+      #
+      #   # Iterate over networks within a specific subnet
+      #   reader.each('192.168.0.0/16') do |network, data|
+      #     puts "#{network}: #{data['city']['names']['en']}"
+      #   end
+      #
+      #   # Also accepts IPAddr objects
+      #   subnet = IPAddr.new('10.0.0.0/8')
+      #   reader.each(subnet) do |network, data|
       #     puts "#{network}: #{data['country']['iso_code']}"
       #   end
       #
@@ -94,7 +106,19 @@ module MaxMind
       #
       #   reader = MaxMind::DB::Rust::Reader.new('GeoLite2-Country.mmdb')
       #
+      #   # Iterate over all networks in the database
       #   reader.each do |network, data|
+      #     puts "#{network}: #{data['country']['iso_code']}"
+      #   end
+      #
+      #   # Iterate over networks within a specific subnet
+      #   reader.each('192.168.0.0/16') do |network, data|
+      #     puts "#{network}: #{data['city']['names']['en']}"
+      #   end
+      #
+      #   # Also accepts IPAddr objects
+      #   subnet = IPAddr.new('10.0.0.0/8')
+      #   reader.each(subnet) do |network, data|
       #     puts "#{network}: #{data['country']['iso_code']}"
       #   end
       #

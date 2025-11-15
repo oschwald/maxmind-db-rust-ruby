@@ -152,6 +152,18 @@ reader.each do |network, data|
   break # Remove this to see all networks
 end
 
+# Iterate over networks within a specific subnet (String CIDR notation)
+reader.each('192.168.0.0/16') do |network, data|
+  puts "#{network}: #{data['city']['names']['en']}"
+end
+
+# Iterate over networks within a specific subnet (IPAddr object)
+require 'ipaddr'
+subnet = IPAddr.new('10.0.0.0/8')
+reader.each(subnet) do |network, data|
+  puts "#{network}: #{data['country']['iso_code']}"
+end
+
 # Use Enumerable methods
 countries = reader.map { |network, data| data['country']['iso_code'] }.uniq
 puts "Unique countries: #{countries.size}"
@@ -216,13 +228,19 @@ Check if the database has been closed.
 
 **Returns:** Boolean
 
-#### `each { |network, data| ... }`
+#### `each(network = nil) { |network, data| ... }`
 
-Iterate over all networks in the database.
+Iterate over networks in the database.
+
+**Parameters:**
+- `network` (String or IPAddr, optional): Network CIDR to iterate within (e.g., "192.168.0.0/16"). If omitted, iterates over all networks in the database.
 
 **Yields:** IPAddr network and Hash data for each entry
 
 **Returns:** Enumerator if no block given
+
+**Raises:**
+- `ArgumentError`: If network CIDR is invalid or IPv6 network specified for IPv4-only database
 
 ### `MaxMind::DB::Rust::Metadata`
 

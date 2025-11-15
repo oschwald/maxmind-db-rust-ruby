@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metadata class with all standard MaxMind DB metadata attributes
 - Support for MODE_AUTO, MODE_MEMORY, and MODE_MMAP modes
 - Iterator support via `each` method (Enumerable interface)
+  - Iterate over all networks in database
+  - Network-scoped iteration with optional CIDR parameter (String or IPAddr)
 - InvalidDatabaseError exception for corrupt databases
 - Thread-safe implementation using Rust Arc and RwLock
 - Support for both String and IPAddr IP address inputs

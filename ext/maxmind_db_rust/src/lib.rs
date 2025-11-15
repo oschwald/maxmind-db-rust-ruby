@@ -590,7 +590,7 @@ impl Reader {
         self.closed.load(Ordering::Acquire)
     }
 
-    fn each(&self) -> Result<Value, Error> {
+    fn each(&self, args: &[Value]) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
         let reader = self.get_reader(&ruby)?;
@@ -605,21 +605,71 @@ impl Reader {
 
         let ip_version = reader.metadata().ip_version;
 
-        // For IPv4 databases, iterate over IPv4 range only
-        // For IPv6 databases, iterate over IPv6 range only (includes IPv4-mapped addresses)
-        let network_str = if ip_version == 4 {
-            "0.0.0.0/0"
+        // Determine the network to iterate over
+        let network_str = if args.is_empty() {
+            // No argument: use default (full database)
+            if ip_version == 4 {
+                "0.0.0.0/0".to_string()
+            } else {
+                "::/0".to_string()
+            }
         } else {
-            "::/0"
+            // Argument provided: extract network CIDR string
+            let network_arg = args[0];
+
+            // Try to get string representation
+            // Accept both String and IPAddr objects
+            let network_str_val = if let Ok(s) = RString::try_convert(network_arg) {
+                // It's already a string
+                s.to_string()?
+            } else {
+                // Check if it's an IPAddr object
+                let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
+                if network_arg.is_kind_of(ipaddr_class) {
+                    // It's an IPAddr - need to get both address and prefix
+                    let ip_str: String = network_arg.funcall("to_s", ())?;
+
+                    // Get the prefix length from IPAddr
+                    // IPAddr stores prefix as a netmask, need to convert
+                    let prefix_len: u8 = network_arg.funcall("prefix", ())?;
+
+                    // Construct CIDR notation
+                    format!("{}/{}", ip_str, prefix_len)
+                } else {
+                    // Try to call to_s on it (works for other objects)
+                    let to_s_result: Value = network_arg.funcall("to_s", ())?;
+                    RString::try_convert(to_s_result)
+                        .map_err(|_| {
+                            Error::new(
+                                ruby.exception_arg_error(),
+                                "Network parameter must be a String or IPAddr",
+                            )
+                        })?
+                        .to_string()?
+                }
+            };
+
+            network_str_val
         };
 
-        let network = IpNetwork::from_str(network_str).map_err(|e| {
+        let network = IpNetwork::from_str(&network_str).map_err(|e| {
             Error::new(
-                ExceptionClass::from_value(invalid_database_error().as_value())
-                    .expect("InvalidDatabaseError should convert to ExceptionClass"),
-                format!("Failed to create network: {}", e),
+                ruby.exception_arg_error(),
+                format!("Invalid network CIDR '{}': {}", network_str, e),
             )
         })?;
+
+        // Validate network matches database IP version
+        // IPv4 in IPv6 DB is OK (IPv4-mapped), IPv6 in IPv6 DB is OK
+        if let (4, IpNetwork::V6(_)) = (ip_version, network) {
+            return Err(Error::new(
+                ruby.exception_arg_error(),
+                format!(
+                    "Cannot search for IPv6 network '{}' in an IPv4-only database",
+                    network_str
+                ),
+            ));
+        }
 
         let mut iter = reader.within(network).map_err(|e| {
             Error::new(
@@ -869,7 +919,7 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     reader_class.define_method("metadata", magnus::method!(Reader::metadata, 0))?;
     reader_class.define_method("close", magnus::method!(Reader::close, 0))?;
     reader_class.define_method("closed", magnus::method!(Reader::closed, 0))?;
-    reader_class.define_method("each", magnus::method!(Reader::each, 0))?;
+    reader_class.define_method("each", magnus::method!(Reader::each, -1))?;
 
     // Include Enumerable module
     let enumerable = ruby.class_object().const_get::<_, RModule>("Enumerable")?;
