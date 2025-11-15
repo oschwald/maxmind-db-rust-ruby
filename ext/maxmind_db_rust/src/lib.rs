@@ -3,8 +3,8 @@ use arc_swap::ArcSwapOption;
 use ipnetwork::IpNetwork;
 use magnus::{
     error::Error, prelude::*, scan_args::get_kwargs,
-    scan_args::scan_args, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule,
-    RString, Symbol, Value,
+    scan_args::scan_args, value::Lazy, ExceptionClass, IntoValue, RArray, RClass, RHash,
+    RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within, WithinItem};
 use memmap2::Mmap;
@@ -28,6 +28,56 @@ use std::{
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 const ERR_BAD_DATA: &str =
     "The MaxMind DB file's data section contains bad data (unknown data type or corrupt data)";
+
+macro_rules! define_interned_keys {
+    ( $( $const_ident:ident => $str:expr ),* $(,)? ) => {
+        $(
+            static $const_ident: Lazy<RString> = Lazy::new(|ruby| {
+                let s = ruby.str_new($str);
+                s.freeze();
+                s
+            });
+        )*
+
+        fn interned_key(ruby: &magnus::Ruby, key: &str) -> Option<Value> {
+            match key {
+                $(
+                $str => Some(ruby.get_inner(&$const_ident).as_value()),
+                )*
+                _ => None,
+            }
+        }
+    };
+}
+
+define_interned_keys!(
+    CITY_KEY => "city",
+    CONTINENT_KEY => "continent",
+    COUNTRY_KEY => "country",
+    REGISTERED_COUNTRY_KEY => "registered_country",
+    REPRESENTED_COUNTRY_KEY => "represented_country",
+    SUBDIVISIONS_KEY => "subdivisions",
+    LOCATION_KEY => "location",
+    POSTAL_KEY => "postal",
+    TRAITS_KEY => "traits",
+    NAMES_KEY => "names",
+    GEONAME_ID_KEY => "geoname_id",
+    ISO_CODE_KEY => "iso_code",
+    CONFIDENCE_KEY => "confidence",
+    ACCURACY_RADIUS_KEY => "accuracy_radius",
+    LATITUDE_KEY => "latitude",
+    LONGITUDE_KEY => "longitude",
+    TIME_ZONE_KEY => "time_zone",
+    METRO_CODE_KEY => "metro_code",
+    POPULATION_DENSITY_KEY => "population_density",
+    EN_KEY => "en",
+    ES_KEY => "es",
+    FR_KEY => "fr",
+    JA_KEY => "ja",
+    PT_BR_KEY => "pt-BR",
+    RU_KEY => "ru",
+    ZH_CN_KEY => "zh-CN",
+);
 
 /// Wrapper that owns the Ruby value produced by deserializing a MaxMind record
 #[derive(Clone)]
@@ -155,18 +205,18 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(
-            self.ruby.str_new(value).into_value_with(self.ruby),
-        ))
+        let val = interned_key(self.ruby, value)
+            .unwrap_or_else(|| self.ruby.str_new(value).into_value_with(self.ruby));
+        Ok(RubyDecodedValue::new(val))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(
-            self.ruby.str_new(&value).into_value_with(self.ruby),
-        ))
+        let val = interned_key(self.ruby, &value)
+            .unwrap_or_else(|| self.ruby.str_new(&value).into_value_with(self.ruby));
+        Ok(RubyDecodedValue::new(val))
     }
 
     fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
@@ -212,7 +262,9 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
         };
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
-            hash.aset(key.as_ref(), value.into_value())
+            let key_val = interned_key(self.ruby, key.as_ref())
+                .unwrap_or_else(|| self.ruby.str_new(key.as_ref()).into_value_with(self.ruby));
+            hash.aset(key_val, value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
         Ok(RubyDecodedValue::new(hash.into_value_with(self.ruby)))
