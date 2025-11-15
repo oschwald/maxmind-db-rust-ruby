@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 arc-swap = "1.7"
 ipnetwork = "0.21"
 magnus = "0.8"
-maxminddb = "0.26.0"
+maxminddb = { version = "0.26.0", features = ["unsafe-str-decode"] }
 memmap2 = "0.9"
 serde = "1.0"
 

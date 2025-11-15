@@ -1,3 +1,6 @@
+// SAFETY: the `maxminddb` crate is built with the `unsafe-str-decode` feature enabled.
+// Ruby validates UTF-8 when we construct `RString`s, so skipping the redundant check in
+// the decoder is safe and avoids re-validating every string record twice.
 use ::maxminddb as maxminddb_crate;
 use arc_swap::ArcSwapOption;
 use ipnetwork::IpNetwork;
