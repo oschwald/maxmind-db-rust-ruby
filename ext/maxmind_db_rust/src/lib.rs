@@ -81,21 +81,23 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_i32<E>(self, value: i32) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         if value >= i32::MIN as i64 && value <= i32::MAX as i64 {
             Ok(RubyDecodedValue::new((value as i32).into_value_with(&ruby)))
         } else {
@@ -107,49 +109,55 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_u32<E>(self, value: u32) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_f32<E>(self, value: f32) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new((value as f64).into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new((value as f64).into_value_with(&ruby)))
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(value.into_value_with(&magnus::Ruby::get().unwrap())))
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
             ruby.str_new(value).into_value_with(&ruby),
         ))
@@ -159,7 +167,7 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
             ruby.str_new(&value).into_value_with(&ruby),
         ))
@@ -169,7 +177,7 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
             ruby.str_from_slice(value).into_value_with(&ruby),
         ))
@@ -179,7 +187,7 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
             ruby.str_from_slice(&value).into_value_with(&ruby),
         ))
@@ -189,7 +197,7 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         A: SeqAccess<'de>,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         let arr = ruby.ary_new();
         while let Some(elem) = seq.next_element_seed(RubyValueSeed)? {
             arr.push(elem.into_value())
@@ -202,7 +210,7 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         A: MapAccess<'de>,
     {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         let hash = ruby.hash_new();
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             let value = map.next_value_seed(RubyValueSeed)?;
@@ -335,7 +343,7 @@ impl Metadata {
     }
 
     fn description(&self) -> RHash {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
         let hash = ruby.hash_new();
         for (k, v) in &self.description_map {
             let _ = hash.aset(k.as_str(), v.as_str());
@@ -381,7 +389,7 @@ struct Reader {
 
 impl Reader {
     fn new(args: &[Value]) -> Result<Self, Error> {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
         let args = scan_args::<(String,), (), (), (), _, ()>(args)?;
         let (database,) = args.required;
@@ -423,7 +431,7 @@ impl Reader {
 
     #[inline]
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
         // Check if database is closed
         if self.closed.load(Ordering::Acquire) {
@@ -448,7 +456,8 @@ impl Reader {
             Ok(None) => Ok(ruby.qnil().as_value()),
             Err(MaxMindDbError::InvalidDatabase(_)) | Err(MaxMindDbError::Io(_)) => {
                 Err(Error::new(
-                    ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+                    ExceptionClass::from_value(invalid_database_error().as_value())
+                        .expect("InvalidDatabaseError should convert to ExceptionClass"),
                     ERR_BAD_DATA,
                 ))
             }
@@ -461,7 +470,7 @@ impl Reader {
 
     #[inline]
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
         // Check if database is closed
         if self.closed.load(Ordering::Acquire) {
@@ -496,7 +505,8 @@ impl Reader {
             }
             Err(MaxMindDbError::InvalidDatabase(_)) | Err(MaxMindDbError::Io(_)) => {
                 Err(Error::new(
-                    ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+                    ExceptionClass::from_value(invalid_database_error().as_value())
+                        .expect("InvalidDatabaseError should convert to ExceptionClass"),
                     ERR_BAD_DATA,
                 ))
             }
@@ -508,7 +518,7 @@ impl Reader {
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
         // Check if database is closed
         if self.closed.load(Ordering::Acquire) {
@@ -533,7 +543,8 @@ impl Reader {
 
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        let mut writer = self.reader.write().unwrap();
+        // If the lock is poisoned (a thread panicked while holding it), we still want to close
+        let mut writer = self.reader.write().unwrap_or_else(|poisoned| poisoned.into_inner());
         *writer = None;
     }
 
@@ -542,7 +553,7 @@ impl Reader {
     }
 
     fn each(&self) -> Result<Value, Error> {
-        let ruby = magnus::Ruby::get().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
         // Check if database is closed
         if self.closed.load(Ordering::Acquire) {
@@ -570,14 +581,16 @@ impl Reader {
 
         let network = IpNetwork::from_str(network_str).map_err(|e| {
             Error::new(
-                ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+                ExceptionClass::from_value(invalid_database_error().as_value())
+                    .expect("InvalidDatabaseError should convert to ExceptionClass"),
                 format!("Failed to create network: {}", e),
             )
         })?;
 
         let mut iter = reader.within(network).map_err(|e| {
             Error::new(
-                ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+                ExceptionClass::from_value(invalid_database_error().as_value())
+                    .expect("InvalidDatabaseError should convert to ExceptionClass"),
                 format!("Failed to iterate: {}", e),
             )
         })?;
@@ -599,7 +612,8 @@ impl Reader {
                 }
                 Err(MaxMindDbError::InvalidDatabase(_)) | Err(MaxMindDbError::Io(_)) => {
                     return Err(Error::new(
-                        ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+                        ExceptionClass::from_value(invalid_database_error().as_value())
+                            .expect("InvalidDatabaseError should convert to ExceptionClass"),
                         ERR_BAD_DATA,
                     ));
                 }
@@ -617,8 +631,11 @@ impl Reader {
 
     /// Helper method to get the reader from the Arc<RwLock<>>
     fn get_reader(&self) -> Result<Arc<ReaderSource>, Error> {
-        let ruby = magnus::Ruby::get().unwrap();
-        let reader_lock = self.reader.read().unwrap();
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
+        let reader_lock = self.reader.read().unwrap_or_else(|poisoned| {
+            // If the lock is poisoned, we can still try to read the data
+            poisoned.into_inner()
+        });
         match reader_lock.as_ref() {
             Some(reader) => Ok(Arc::clone(reader)),
             None => Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB)),
@@ -686,14 +703,17 @@ fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
 
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
 fn open_database_mmap(path: &str) -> Result<Reader, Error> {
-    let ruby = magnus::Ruby::get().unwrap();
+    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
 
     let file = File::open(Path::new(path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            let errno = ruby.class_object().const_get::<_, RModule>("Errno").unwrap();
-            let enoent = errno.const_get::<_, RClass>("ENOENT").unwrap();
+            let errno = ruby.class_object().const_get::<_, RModule>("Errno")
+                .expect("Errno module should exist");
+            let enoent = errno.const_get::<_, RClass>("ENOENT")
+                .expect("Errno::ENOENT should exist");
             Error::new(
-                ExceptionClass::from_value(enoent.as_value()).unwrap(),
+                ExceptionClass::from_value(enoent.as_value())
+                    .expect("ENOENT should convert to ExceptionClass"),
                 e.to_string(),
             )
         }
@@ -709,7 +729,8 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
 
     let reader = MaxMindReader::from_source(mmap).map_err(|_| {
         Error::new(
-            ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+            ExceptionClass::from_value(invalid_database_error().as_value())
+                .expect("InvalidDatabaseError should convert to ExceptionClass"),
             format!(
                 "Error opening database file ({}). Is this a valid MaxMind DB file?",
                 path
@@ -722,14 +743,17 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
 
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
 fn open_database_memory(path: &str) -> Result<Reader, Error> {
-    let ruby = magnus::Ruby::get().unwrap();
+    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
 
     let mut file = File::open(Path::new(path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            let errno = ruby.class_object().const_get::<_, RModule>("Errno").unwrap();
-            let enoent = errno.const_get::<_, RClass>("ENOENT").unwrap();
+            let errno = ruby.class_object().const_get::<_, RModule>("Errno")
+                .expect("Errno module should exist");
+            let enoent = errno.const_get::<_, RClass>("ENOENT")
+                .expect("Errno::ENOENT should exist");
             Error::new(
-                ExceptionClass::from_value(enoent.as_value()).unwrap(),
+                ExceptionClass::from_value(enoent.as_value())
+                    .expect("ENOENT should convert to ExceptionClass"),
                 e.to_string(),
             )
         }
@@ -746,7 +770,8 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
 
     let reader = MaxMindReader::from_source(buffer).map_err(|_| {
         Error::new(
-            ExceptionClass::from_value(invalid_database_error().as_value()).unwrap(),
+            ExceptionClass::from_value(invalid_database_error().as_value())
+                .expect("InvalidDatabaseError should convert to ExceptionClass"),
             format!(
                 "Error opening database file ({}). Is this a valid MaxMind DB file?",
                 path
@@ -759,11 +784,15 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
 
 /// Get the InvalidDatabaseError class
 fn invalid_database_error() -> RClass {
-    let ruby = magnus::Ruby::get().unwrap();
-    let maxmind = ruby.class_object().const_get::<_, RModule>("MaxMind").unwrap();
-    let db = maxmind.const_get::<_, RModule>("DB").unwrap();
-    let rust = db.const_get::<_, RModule>("Rust").unwrap();
-    rust.const_get::<_, RClass>("InvalidDatabaseError").unwrap()
+    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
+    let maxmind = ruby.class_object().const_get::<_, RModule>("MaxMind")
+        .expect("MaxMind module should exist");
+    let db = maxmind.const_get::<_, RModule>("DB")
+        .expect("MaxMind::DB module should exist");
+    let rust = db.const_get::<_, RModule>("Rust")
+        .expect("MaxMind::DB::Rust module should exist");
+    rust.const_get::<_, RClass>("InvalidDatabaseError")
+        .expect("InvalidDatabaseError class should exist")
 }
 
 #[magnus::init]
