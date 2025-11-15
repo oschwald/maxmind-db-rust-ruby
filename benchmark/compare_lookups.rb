@@ -3,6 +3,7 @@
 
 # Benchmark comparing MaxMind official Ruby gem vs Rust implementation
 # Usage: ruby benchmark/compare_lookups.rb path/to/database.mmdb [iterations]
+# Set RUST_ONLY=1 to skip requiring/benchmarking the official gem for faster runs.
 
 require 'benchmark'
 require 'ipaddr'
@@ -10,13 +11,18 @@ require 'ipaddr'
 # Add lib directory to load path when running standalone
 $LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
 
-# Try to require both implementations
-begin
-  require 'maxmind/db'
-  OFFICIAL_AVAILABLE = true
-rescue LoadError
+# Try to require both implementations unless instructed otherwise
+if ENV['RUST_ONLY'] == '1'
   OFFICIAL_AVAILABLE = false
-  warn 'Warning: Official maxmind-db gem not available. Install with: gem install maxmind-db'
+  warn 'Skipping official maxmind-db gem benchmark (RUST_ONLY=1)'
+else
+  begin
+    require 'maxmind/db'
+    OFFICIAL_AVAILABLE = true
+  rescue LoadError
+    OFFICIAL_AVAILABLE = false
+    warn 'Warning: Official maxmind-db gem not available. Install with: gem install maxmind-db'
+  end
 end
 
 require 'maxmind/db/rust'
