@@ -5,9 +5,8 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::ArcSwapOption;
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::Error, prelude::*, scan_args::get_kwargs,
-    scan_args::scan_args, value::Lazy, ExceptionClass, IntoValue, RArray, RClass, RHash,
-    RModule, RString, Symbol, Value,
+    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, value::Lazy,
+    ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within, WithinItem};
 use memmap2::Mmap;
@@ -105,8 +104,7 @@ impl<'de> Deserialize<'de> for RubyDecodedValue {
     where
         D: Deserializer<'de>,
     {
-        let ruby =
-            magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         RubyValueSeed { ruby: &ruby }.deserialize(deserializer)
     }
 }
@@ -156,7 +154,9 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
         E: de::Error,
     {
         if value >= i32::MIN as i64 && value <= i32::MAX as i64 {
-            Ok(RubyDecodedValue::new((value as i32).into_value_with(self.ruby)))
+            Ok(RubyDecodedValue::new(
+                (value as i32).into_value_with(self.ruby),
+            ))
         } else {
             Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
         }
@@ -194,7 +194,9 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new((value as f64).into_value_with(self.ruby)))
+        Ok(RubyDecodedValue::new(
+            (value as f64).into_value_with(self.ruby),
+        ))
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
@@ -312,19 +314,17 @@ impl ReaderSource {
     }
 
     #[inline]
-    fn within(
-        &self,
-        network: IpNetwork,
-    ) -> Result<ReaderWithin, MaxMindDbError> {
+    fn within(&self, network: IpNetwork) -> Result<ReaderWithin, MaxMindDbError> {
         match self {
             ReaderSource::Mmap(reader) => {
                 let iter = reader.within::<RubyDecodedValue>(network)?;
                 // SAFETY: the iterator holds a reference into `reader`. We'll store an Arc guard
                 // alongside it so the reader outlives the transmuted iterator.
                 Ok(ReaderWithin::Mmap(unsafe {
-                    std::mem::transmute::<Within<'_, RubyDecodedValue, Mmap>, Within<'static, RubyDecodedValue, Mmap>>(
-                        iter,
-                    )
+                    std::mem::transmute::<
+                        Within<'_, RubyDecodedValue, Mmap>,
+                        Within<'static, RubyDecodedValue, Mmap>,
+                    >(iter)
                 }))
             }
             ReaderSource::Memory(reader) => {
@@ -446,11 +446,7 @@ impl Reader {
 
         let args = scan_args::<(String,), (), (), (), _, ()>(args)?;
         let (database,) = args.required;
-        let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(
-            args.keywords,
-            &[],
-            &["mode"],
-        )?;
+        let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(args.keywords, &[], &["mode"])?;
         let (mode,) = kw.optional;
 
         // Parse mode from options hash
@@ -761,7 +757,10 @@ fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Er
         return IpAddr::from_str(&ipaddr_obj).map_err(|_| {
             Error::new(
                 ruby.exception_arg_error(),
-                format!("'{}' does not appear to be an IPv4 or IPv6 address", ipaddr_obj),
+                format!(
+                    "'{}' does not appear to be an IPv4 or IPv6 address",
+                    ipaddr_obj
+                ),
             )
         });
     }
@@ -786,9 +785,12 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
 
     let file = File::open(Path::new(path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            let errno = ruby.class_object().const_get::<_, RModule>("Errno")
+            let errno = ruby
+                .class_object()
+                .const_get::<_, RModule>("Errno")
                 .expect("Errno module should exist");
-            let enoent = errno.const_get::<_, RClass>("ENOENT")
+            let enoent = errno
+                .const_get::<_, RClass>("ENOENT")
                 .expect("Errno::ENOENT should exist");
             Error::new(
                 ExceptionClass::from_value(enoent.as_value())
@@ -826,9 +828,12 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
 
     let mut file = File::open(Path::new(path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            let errno = ruby.class_object().const_get::<_, RModule>("Errno")
+            let errno = ruby
+                .class_object()
+                .const_get::<_, RModule>("Errno")
                 .expect("Errno module should exist");
-            let enoent = errno.const_get::<_, RClass>("ENOENT")
+            let enoent = errno
+                .const_get::<_, RClass>("ENOENT")
                 .expect("Errno::ENOENT should exist");
             Error::new(
                 ExceptionClass::from_value(enoent.as_value())
@@ -864,11 +869,15 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
 /// Get the InvalidDatabaseError class
 fn invalid_database_error() -> RClass {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-    let maxmind = ruby.class_object().const_get::<_, RModule>("MaxMind")
+    let maxmind = ruby
+        .class_object()
+        .const_get::<_, RModule>("MaxMind")
         .expect("MaxMind module should exist");
-    let db = maxmind.const_get::<_, RModule>("DB")
+    let db = maxmind
+        .const_get::<_, RModule>("DB")
         .expect("MaxMind::DB module should exist");
-    let rust = db.const_get::<_, RModule>("Rust")
+    let rust = db
+        .const_get::<_, RModule>("Rust")
         .expect("MaxMind::DB::Rust module should exist");
     rust.const_get::<_, RClass>("InvalidDatabaseError")
         .expect("InvalidDatabaseError class should exist")
@@ -893,8 +902,9 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
         }
         Ok(existing) => {
             // MaxMind::DB exists as a Module (our gem loaded first)
-            let db_mod = RModule::from_value(existing)
-                .ok_or_else(|| Error::new(ruby.exception_type_error(), "MaxMind::DB is not a module"))?;
+            let db_mod = RModule::from_value(existing).ok_or_else(|| {
+                Error::new(ruby.exception_type_error(), "MaxMind::DB is not a module")
+            })?;
             db_mod.define_module("Rust")?
         }
         Err(_) => {
@@ -942,8 +952,14 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     metadata_class.define_method("languages", magnus::method!(Metadata::languages, 0))?;
     metadata_class.define_method("node_count", magnus::method!(Metadata::node_count, 0))?;
     metadata_class.define_method("record_size", magnus::method!(Metadata::record_size, 0))?;
-    metadata_class.define_method("node_byte_size", magnus::method!(Metadata::node_byte_size, 0))?;
-    metadata_class.define_method("search_tree_size", magnus::method!(Metadata::search_tree_size, 0))?;
+    metadata_class.define_method(
+        "node_byte_size",
+        magnus::method!(Metadata::node_byte_size, 0),
+    )?;
+    metadata_class.define_method(
+        "search_tree_size",
+        magnus::method!(Metadata::search_tree_size, 0),
+    )?;
 
     // Define MODE constants
     rust.const_set("MODE_AUTO", ruby.to_symbol("MODE_AUTO"))?;
