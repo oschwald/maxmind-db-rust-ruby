@@ -1,0 +1,57 @@
+exclude = [
+  "target/**/*",
+  "ext/maxmind_db_rust/target/**/*",
+  "test/data/**/*",
+  "pkg/**/*",
+  "tmp/**/*",
+  "vendor/**/*",
+  ".bundle/**/*",
+  "todo.md",
+]
+
+[commands.clippy]
+type = "lint"
+include = "ext/maxmind_db_rust/**/*.rs"
+invoke = "once"
+path-args = "none"
+cmd = [
+  "sh",
+  "-c",
+  "cd ext/maxmind_db_rust && BINDGEN_EXTRA_CLANG_ARGS=\"-I$(dirname $(dirname $(command -v gcc)))/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion | cut -d. -f1)/include\" cargo clippy --all-features -- -D warnings",
+]
+ok-exit-codes = [0]
+lint-failure-exit-codes = [101]
+expect-stderr = true
+
+[commands.rustfmt]
+type = "both"
+include = "ext/maxmind_db_rust/**/*.rs"
+invoke = "once"
+path-args = "none"
+cmd = ["sh", "-c", "cd ext/maxmind_db_rust && cargo fmt"]
+lint-flags = "--check"
+ok-exit-codes = [0]
+lint-failure-exit-codes = [1]
+
+[commands.rubocop]
+type = "both"
+include = ["**/*.rb", "**/*.gemspec", "**/Rakefile", "**/Gemfile"]
+invoke = "once"
+path-args = "none"
+cmd = ["bundle", "exec", "rubocop"]
+tidy-flags = "-A"
+ok-exit-codes = [0]
+lint-failure-exit-codes = [1]
+expect-stderr = true
+
+[commands.prettier]
+type = "both"
+include = ["**/*.md", "**/*.yml", "**/*.yaml"]
+invoke = "once"
+path-args = "file"
+cmd = ["prettier"]
+lint-flags = "--check"
+tidy-flags = "--write"
+ok-exit-codes = [0]
+lint-failure-exit-codes = [1]
+expect-stderr = true
