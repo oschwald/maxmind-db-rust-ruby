@@ -191,7 +191,10 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         A: SeqAccess<'de>,
     {
-        let arr = self.ruby.ary_new();
+        let arr = match seq.size_hint() {
+            Some(cap) => self.ruby.ary_new_capa(cap),
+            None => self.ruby.ary_new(),
+        };
         while let Some(elem) = seq.next_element_seed(RubyValueSeed { ruby: self.ruby })? {
             arr.push(elem.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
@@ -203,7 +206,10 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         A: MapAccess<'de>,
     {
-        let hash = self.ruby.hash_new();
+        let hash = match map.size_hint() {
+            Some(cap) => self.ruby.hash_new_capa(cap),
+            None => self.ruby.hash_new(),
+        };
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
             hash.aset(key.as_ref(), value.into_value())
