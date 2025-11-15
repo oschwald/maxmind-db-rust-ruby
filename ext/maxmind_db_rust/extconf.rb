@@ -1,0 +1,5 @@
+# frozen_string_literal: true
+
+require 'rb_sys/mkmf'
+
+create_rust_makefile('maxmind_db_rust')

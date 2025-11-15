@@ -1,0 +1,24 @@
+[package]
+name = "maxmind_db_rust"
+version = "0.1.0"
+edition = "2021"
+authors = ["Gregory Oschwald <oschwald@gmail.com>"]
+description = "Rust-based Ruby binding for MaxMind DB - high-performance alternative to maxmind-db"
+license = "ISC"
+repository = "https://github.com/oschwald/maxminddb-rust-ruby"
+
+[lib]
+name = "maxmind_db_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+ipnetwork = "0.21"
+magnus = "0.8"
+maxminddb = "0.26.0"
+memmap2 = "0.9"
+serde = "1.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
