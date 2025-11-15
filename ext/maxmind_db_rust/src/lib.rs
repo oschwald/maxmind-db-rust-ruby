@@ -1,4 +1,5 @@
 use ::maxminddb as maxminddb_crate;
+use arc_swap::ArcSwapOption;
 use ipnetwork::IpNetwork;
 use magnus::{
     error::Error, prelude::*, scan_args::get_kwargs,
@@ -19,7 +20,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
+        Arc,
     },
 };
 
@@ -382,7 +383,7 @@ unsafe impl Send for Metadata {}
 #[derive(Clone)]
 #[magnus::wrap(class = "MaxMind::DB::Rust::Reader")]
 struct Reader {
-    reader: Arc<RwLock<Option<Arc<ReaderSource>>>>,
+    reader: Arc<ArcSwapOption<ReaderSource>>,
     closed: Arc<AtomicBool>,
     ip_version: u16,
 }
@@ -433,10 +434,7 @@ impl Reader {
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        // Check if database is closed
-        if self.closed.load(Ordering::Acquire) {
-            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
-        }
+        let reader = self.get_reader(&ruby)?;
 
         // Parse IP address
         let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
@@ -447,8 +445,6 @@ impl Reader {
                 ipv6_in_ipv4_error(&parsed_ip),
             ));
         }
-
-        let reader = self.get_reader()?;
 
         // Perform lookup
         match reader.lookup(parsed_ip) {
@@ -472,10 +468,7 @@ impl Reader {
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        // Check if database is closed
-        if self.closed.load(Ordering::Acquire) {
-            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
-        }
+        let reader = self.get_reader(&ruby)?;
 
         // Parse IP address
         let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
@@ -486,8 +479,6 @@ impl Reader {
                 ipv6_in_ipv4_error(&parsed_ip),
             ));
         }
-
-        let reader = self.get_reader()?;
 
         // Perform lookup with prefix
         match reader.lookup_prefix(parsed_ip) {
@@ -520,12 +511,7 @@ impl Reader {
     fn metadata(&self) -> Result<Metadata, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        // Check if database is closed
-        if self.closed.load(Ordering::Acquire) {
-            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
-        }
-
-        let reader = self.get_reader()?;
+        let reader = self.get_reader(&ruby)?;
         let meta = reader.metadata();
 
         Ok(Metadata {
@@ -542,10 +528,10 @@ impl Reader {
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        // If the lock is poisoned (a thread panicked while holding it), we still want to close
-        let mut writer = self.reader.write().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *writer = None;
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.reader.store(None);
     }
 
     fn closed(&self) -> bool {
@@ -555,10 +541,7 @@ impl Reader {
     fn each(&self) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        // Check if database is closed
-        if self.closed.load(Ordering::Acquire) {
-            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
-        }
+        let reader = self.get_reader(&ruby)?;
 
         // If no block given, return enumerator
         if !ruby.block_given() {
@@ -568,7 +551,6 @@ impl Reader {
             ));
         }
 
-        let reader = self.get_reader()?;
         let ip_version = reader.metadata().ip_version;
 
         // For IPv4 databases, iterate over IPv4 range only
@@ -629,17 +611,11 @@ impl Reader {
         Ok(ruby.qnil().as_value())
     }
 
-    /// Helper method to get the reader from the Arc<RwLock<>>
-    fn get_reader(&self) -> Result<Arc<ReaderSource>, Error> {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-        let reader_lock = self.reader.read().unwrap_or_else(|poisoned| {
-            // If the lock is poisoned, we can still try to read the data
-            poisoned.into_inner()
-        });
-        match reader_lock.as_ref() {
-            Some(reader) => Ok(Arc::clone(reader)),
-            None => Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB)),
-        }
+    /// Helper method to get the reader from the ArcSwapOption
+    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Arc<ReaderSource>, Error> {
+        self.reader
+            .load_full()
+            .ok_or_else(|| Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB))
     }
 }
 
@@ -648,8 +624,9 @@ unsafe impl Send for Reader {}
 /// Helper function to create a Reader from a ReaderSource
 fn create_reader(source: ReaderSource) -> Reader {
     let ip_version = source.metadata().ip_version;
+    let source = Arc::new(source);
     Reader {
-        reader: Arc::new(RwLock::new(Some(Arc::new(source)))),
+        reader: Arc::new(ArcSwapOption::from(Some(source))),
         closed: Arc::new(AtomicBool::new(false)),
         ip_version,
     }
