@@ -759,9 +759,32 @@ fn invalid_database_error() -> RClass {
 #[magnus::init]
 fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     // Define module hierarchy: MaxMind::DB::Rust
+    // Handle case where official maxmind-db gem may have already defined MaxMind::DB as a Class
     let maxmind = ruby.define_module("MaxMind")?;
-    let db = maxmind.define_module("DB")?;
-    let rust = db.define_module("Rust")?;
+
+    // Try to get or define DB - it might be a Class (official gem) or Module (ours)
+    let db_value = maxmind.const_get::<_, Value>("DB");
+    let rust = match db_value {
+        Ok(existing) if existing.is_kind_of(ruby.class_class()) => {
+            // MaxMind::DB exists as a Class (official gem loaded first)
+            // Define Rust module directly as a constant on the class using funcall
+            let rust_mod = ruby.define_module("MaxMindDBRustTemp")?;
+            // Use const_set via funcall on the existing class/module
+            let _ = existing.funcall::<_, _, Value>("const_set", ("Rust", rust_mod))?;
+            rust_mod
+        }
+        Ok(existing) => {
+            // MaxMind::DB exists as a Module (our gem loaded first)
+            let db_mod = RModule::from_value(existing)
+                .ok_or_else(|| Error::new(ruby.exception_type_error(), "MaxMind::DB is not a module"))?;
+            db_mod.define_module("Rust")?
+        }
+        Err(_) => {
+            // MaxMind::DB doesn't exist, define it as a module
+            let db = maxmind.define_module("DB")?;
+            db.define_module("Rust")?
+        }
+    };
 
     // Define InvalidDatabaseError
     let runtime_error = ruby.exception_runtime_error();
