@@ -42,7 +42,7 @@ echo $"Test results:"
 bundle exec rake test
 bundle exec rubocop
 cd ext/maxmind_db_rust
-cargo clippy -- -D warnings
+BINDGEN_EXTRA_CLANG_ARGS="-I$(dirname $(dirname $(command -v gcc)))/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion | cut -d. -f1)/include" cargo clippy -- -D warnings
 cargo fmt --check
 cd ../..
 
