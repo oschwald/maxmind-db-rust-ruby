@@ -43,7 +43,12 @@ git submodule update --init --recursive
 
 # Install dependencies
 bundle install
+
+# Configure git to use the .githooks directory
+git config core.hooksPath .githooks
 ```
+
+This will enable the pre-commit hook that runs `precious lint` on staged files before each commit.
 
 ## Building the Extension
 
@@ -127,6 +132,29 @@ git submodule update --init --recursive
 ```
 
 ## Code Quality
+
+### Precious (Recommended)
+
+The easiest way to run all linters and formatters is using [precious](https://github.com/houseabsolute/precious):
+
+```bash
+# Install precious (once)
+cargo install precious
+
+# Check all linters
+precious lint --all
+
+# Auto-fix all issues
+precious tidy --all
+
+# Check only staged files (useful before committing)
+precious lint --staged
+
+# Run specific linter
+precious lint -c rubocop
+```
+
+The pre-commit hook automatically runs `precious lint --staged` before each commit.
 
 ### RuboCop (Ruby)
 
