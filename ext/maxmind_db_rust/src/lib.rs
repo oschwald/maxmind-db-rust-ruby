@@ -3,7 +3,7 @@ use ipnetwork::IpNetwork;
 use magnus::{
     error::Error, prelude::*, scan_args::get_kwargs,
     scan_args::scan_args, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule,
-    Symbol, TryConvert, Value,
+    RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within, WithinItem};
 use memmap2::Mmap;
@@ -421,6 +421,7 @@ impl Reader {
         }
     }
 
+    #[inline]
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().unwrap();
 
@@ -430,7 +431,7 @@ impl Reader {
         }
 
         // Parse IP address
-        let parsed_ip = parse_ip_address(ip_address)?;
+        let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
 
         if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
             return Err(Error::new(
@@ -458,6 +459,7 @@ impl Reader {
         }
     }
 
+    #[inline]
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().unwrap();
 
@@ -467,7 +469,7 @@ impl Reader {
         }
 
         // Parse IP address
-        let parsed_ip = parse_ip_address(ip_address)?;
+        let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
 
         if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
             return Err(Error::new(
@@ -636,13 +638,21 @@ fn create_reader(source: ReaderSource) -> Reader {
     }
 }
 
-/// Parse IP address from Ruby value (String or IPAddr)
-fn parse_ip_address(value: Value) -> Result<IpAddr, Error> {
-    let ruby = magnus::Ruby::get().unwrap();
+/// Parse IP address from Ruby value (String or IPAddr) - optimized version
+#[inline(always)]
+fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+    // Fast path: Try as RString first (most common case) - zero-copy
+    if let Some(rstring) = RString::from_value(value) {
+        // SAFETY: as_str() returns a &str that's valid as long as the Ruby string isn't modified
+        // We use it immediately for parsing, so this is safe
+        let ip_str = unsafe { rstring.as_str() }.map_err(|e| {
+            Error::new(
+                ruby.exception_arg_error(),
+                format!("Invalid UTF-8 in IP address string: {}", e),
+            )
+        })?;
 
-    // Try as String first
-    if let Ok(ip_str) = String::try_convert(value) {
-        return IpAddr::from_str(&ip_str).map_err(|_| {
+        return IpAddr::from_str(ip_str).map_err(|_| {
             Error::new(
                 ruby.exception_arg_error(),
                 format!("'{}' does not appear to be an IPv4 or IPv6 address", ip_str),
@@ -650,7 +660,7 @@ fn parse_ip_address(value: Value) -> Result<IpAddr, Error> {
         });
     }
 
-    // Try as IPAddr object
+    // Slow path: Try as IPAddr object
     if let Ok(ipaddr_obj) = value.funcall::<_, _, String>("to_s", ()) {
         return IpAddr::from_str(&ipaddr_obj).map_err(|_| {
             Error::new(
