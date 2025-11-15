@@ -28,6 +28,14 @@ fi
 
 # Build the Rust extension
 cd ext/maxmind_db_rust
+
+# On macOS, we need to allow undefined symbols (Ruby C API functions)
+# which will be resolved when Ruby loads the extension
+if [ "$(uname)" = "Darwin" ]; then
+    export RUSTFLAGS="-C link-arg=-undefined -C link-arg=dynamic_lookup"
+    echo "Setting RUSTFLAGS=$RUSTFLAGS for macOS"
+fi
+
 cargo build --release
 cd ../..
 
