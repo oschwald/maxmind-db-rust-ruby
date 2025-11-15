@@ -12,6 +12,7 @@ jobs:
   release:
     name: Release gem to RubyGems.org
     runs-on: ubuntu-latest
+    environment: RubyGems
 
     permissions:
       id-token: write # Required for trusted publishing
