@@ -88,7 +88,7 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(ipv6_test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(ipv6_test_db_path)
-    record = reader.get('::1')
+    _record = reader.get('::1')
 
     reader.close
   end
@@ -98,7 +98,7 @@ class ReaderTest < Minitest::Test
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
     ip = IPAddr.new('1.1.1.1')
-    record = reader.get(ip)
+    _record = reader.get(ip)
 
     # Should not raise an error
     reader.close
@@ -108,7 +108,7 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
-    record, prefix_len = reader.get_with_prefix_length('1.1.1.1')
+    _record, prefix_len = reader.get_with_prefix_length('1.1.1.1')
 
     assert_kind_of Integer, prefix_len
     assert prefix_len >= 0
