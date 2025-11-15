@@ -1,7 +1,7 @@
 # maxmind-db-rust
 
-[![Test](https://github.com/oschwald/maxminddb-rust-ruby/actions/workflows/test.yml/badge.svg)](https://github.com/oschwald/maxminddb-rust-ruby/actions/workflows/test.yml)
-[![Lint](https://github.com/oschwald/maxminddb-rust-ruby/actions/workflows/lint.yml/badge.svg)](https://github.com/oschwald/maxminddb-rust-ruby/actions/workflows/lint.yml)
+[![Test](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/test.yml/badge.svg)](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/test.yml)
+[![Lint](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/lint.yml/badge.svg)](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/lint.yml)
 
 A high-performance Rust-based Ruby gem for reading MaxMind DB files. Provides API compatibility with the official `maxmind-db` gem while leveraging Rust for superior performance.
 
@@ -284,8 +284,8 @@ Interested in contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed 
 ### Quick Start
 
 ```bash
-git clone https://github.com/oschwald/maxminddb-rust-ruby.git
-cd maxminddb-rust-ruby
+git clone https://github.com/oschwald/maxmind-db-rust-ruby.git
+cd maxmind-db-rust-ruby
 git submodule update --init --recursive
 bundle install
 bundle exec rake compile
@@ -306,7 +306,7 @@ This software is licensed under the ISC License. See the LICENSE file for detail
 
 ## Support
 
-- **Issues**: https://github.com/oschwald/maxminddb-rust-ruby/issues
+- **Issues**: https://github.com/oschwald/maxmind-db-rust-ruby/issues
 - **Documentation**: https://www.rubydoc.info/gems/maxmind-db-rust
 
 ## Credits

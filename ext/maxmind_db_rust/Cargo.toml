@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Gregory Oschwald <oschwald@gmail.com>"]
 description = "Rust-based Ruby binding for MaxMind DB - high-performance alternative to maxmind-db"
 license = "ISC"
-repository = "https://github.com/oschwald/maxminddb-rust-ruby"
+repository = "https://github.com/oschwald/maxmind-db-rust-ruby"
 
 [lib]
 name = "maxmind_db_rust"

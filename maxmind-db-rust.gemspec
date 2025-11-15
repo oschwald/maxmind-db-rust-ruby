@@ -9,15 +9,15 @@ Gem::Specification.new do |s|
 
   s.description = 'An unofficial high-performance Rust-based gem for reading MaxMind DB files. Provides API compatibility with the official maxmind-db gem while leveraging Rust for superior performance. MaxMind DB is a binary file format that stores data indexed by IP address subnets (IPv4 or IPv6). This library is not endorsed by MaxMind.'
   s.email       = 'oschwald@gmail.com'
-  s.homepage    = 'https://github.com/oschwald/maxminddb-rust-ruby'
+  s.homepage    = 'https://github.com/oschwald/maxmind-db-rust-ruby'
   s.licenses    = ['ISC']
 
   s.metadata = {
-    'bug_tracker_uri' => 'https://github.com/oschwald/maxminddb-rust-ruby/issues',
-    'changelog_uri' => 'https://github.com/oschwald/maxminddb-rust-ruby/blob/main/CHANGELOG.md',
+    'bug_tracker_uri' => 'https://github.com/oschwald/maxmind-db-rust-ruby/issues',
+    'changelog_uri' => 'https://github.com/oschwald/maxmind-db-rust-ruby/blob/main/CHANGELOG.md',
     'documentation_uri' => 'https://www.rubydoc.info/gems/maxmind-db-rust',
-    'homepage_uri' => 'https://github.com/oschwald/maxminddb-rust-ruby',
-    'source_code_uri' => 'https://github.com/oschwald/maxminddb-rust-ruby',
+    'homepage_uri' => 'https://github.com/oschwald/maxmind-db-rust-ruby',
+    'source_code_uri' => 'https://github.com/oschwald/maxmind-db-rust-ruby',
     'rubygems_mfa_required' => 'true',
   }
 

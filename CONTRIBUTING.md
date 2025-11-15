@@ -35,8 +35,8 @@ source $HOME/.cargo/env
 ### Clone and Setup
 
 ```bash
-git clone https://github.com/oschwald/maxminddb-rust-ruby.git
-cd maxminddb-rust-ruby
+git clone https://github.com/oschwald/maxmind-db-rust-ruby.git
+cd maxmind-db-rust-ruby
 
 # Initialize git submodules (for test data)
 git submodule update --init --recursive
@@ -162,7 +162,7 @@ cargo fmt -- --check
 ## Project Structure
 
 ```
-maxminddb-rust-ruby/
+maxmind-db-rust-ruby/
 ├── ext/maxmind_db_rust/          # Rust extension code
 │   ├── Cargo.toml                # Rust dependencies
 │   ├── extconf.rb                # Ruby build configuration
@@ -429,7 +429,7 @@ When making performance-related changes:
 
 ## Getting Help
 
-- **Issues**: https://github.com/oschwald/maxminddb-rust-ruby/issues
+- **Issues**: https://github.com/oschwald/maxmind-db-rust-ruby/issues
 - **Discussions**: Use GitHub Discussions for questions
 - **MaxMind Docs**: https://maxmind.github.io/MaxMind-DB/
 
