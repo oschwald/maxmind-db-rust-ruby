@@ -52,26 +52,32 @@ impl<'de> Deserialize<'de> for RubyDecodedValue {
     where
         D: Deserializer<'de>,
     {
-        RubyValueSeed.deserialize(deserializer)
+        let ruby =
+            magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
+        RubyValueSeed { ruby: &ruby }.deserialize(deserializer)
     }
 }
 
-struct RubyValueSeed;
+struct RubyValueSeed<'ruby> {
+    ruby: &'ruby magnus::Ruby,
+}
 
-impl<'de> DeserializeSeed<'de> for RubyValueSeed {
+impl<'ruby, 'de> DeserializeSeed<'de> for RubyValueSeed<'ruby> {
     type Value = RubyDecodedValue;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(RubyValueVisitor)
+        deserializer.deserialize_any(RubyValueVisitor { ruby: self.ruby })
     }
 }
 
-struct RubyValueVisitor;
+struct RubyValueVisitor<'ruby> {
+    ruby: &'ruby magnus::Ruby,
+}
 
-impl<'de> Visitor<'de> for RubyValueVisitor {
+impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     type Value = RubyDecodedValue;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -82,27 +88,24 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_i32<E>(self, value: i32) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         if value >= i32::MIN as i64 && value <= i32::MAX as i64 {
-            Ok(RubyDecodedValue::new((value as i32).into_value_with(&ruby)))
+            Ok(RubyDecodedValue::new((value as i32).into_value_with(self.ruby)))
         } else {
-            Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+            Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
         }
     }
 
@@ -110,57 +113,50 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_u32<E>(self, value: u32) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_f32<E>(self, value: f32) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new((value as f64).into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new((value as f64).into_value_with(self.ruby)))
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        Ok(RubyDecodedValue::new(value.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
-            ruby.str_new(value).into_value_with(&ruby),
+            self.ruby.str_new(value).into_value_with(self.ruby),
         ))
     }
 
@@ -168,9 +164,8 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
-            ruby.str_new(&value).into_value_with(&ruby),
+            self.ruby.str_new(&value).into_value_with(self.ruby),
         ))
     }
 
@@ -178,9 +173,8 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
-            ruby.str_from_slice(value).into_value_with(&ruby),
+            self.ruby.str_from_slice(value).into_value_with(self.ruby),
         ))
     }
 
@@ -188,9 +182,8 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         E: de::Error,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
         Ok(RubyDecodedValue::new(
-            ruby.str_from_slice(&value).into_value_with(&ruby),
+            self.ruby.str_from_slice(&value).into_value_with(self.ruby),
         ))
     }
 
@@ -198,27 +191,25 @@ impl<'de> Visitor<'de> for RubyValueVisitor {
     where
         A: SeqAccess<'de>,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        let arr = ruby.ary_new();
-        while let Some(elem) = seq.next_element_seed(RubyValueSeed)? {
+        let arr = self.ruby.ary_new();
+        while let Some(elem) = seq.next_element_seed(RubyValueSeed { ruby: self.ruby })? {
             arr.push(elem.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
-        Ok(RubyDecodedValue::new(arr.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(arr.into_value_with(self.ruby)))
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in deserializer");
-        let hash = ruby.hash_new();
+        let hash = self.ruby.hash_new();
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            let value = map.next_value_seed(RubyValueSeed)?;
+            let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
             hash.aset(key.as_ref(), value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
-        Ok(RubyDecodedValue::new(hash.into_value_with(&ruby)))
+        Ok(RubyDecodedValue::new(hash.into_value_with(self.ruby)))
     }
 }
 
