@@ -202,10 +202,10 @@ class ReaderTest < Minitest::Test
       assert_kind_of IPAddr, network
       assert(data.nil? || data.is_a?(Hash))
       count += 1
-      break if count >= 5  # Just test first 5 entries
+      break if count >= 5 # Just test first 5 entries
     end
 
-    assert count > 0
+    assert count.positive?
 
     reader.close
   end
@@ -219,7 +219,7 @@ class ReaderTest < Minitest::Test
     first_three = reader.take(3)
     assert_equal 3, first_three.length
 
-    first_three.each do |network, data|
+    first_three.each do |network, _data|
       assert_kind_of IPAddr, network
     end
 
@@ -257,7 +257,7 @@ class ReaderTest < Minitest::Test
     # Iterate within a specific IPv4 subnet using IPAddr
     subnet = IPAddr.new('81.2.69.0/24')
     networks = []
-    reader.each(subnet) do |network, data|
+    reader.each(subnet) do |network, _data|
       networks << network.to_s
       assert_kind_of IPAddr, network
     end
@@ -275,7 +275,7 @@ class ReaderTest < Minitest::Test
 
     # Iterate within a specific IPv6 subnet
     networks = []
-    reader.each('2001::/16') do |network, data|
+    reader.each('2001::/16') do |network, _data|
       networks << network.to_s
       assert_kind_of IPAddr, network
       # Verify network is IPv6 and within range
@@ -346,9 +346,9 @@ class ReaderTest < Minitest::Test
       reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: mode)
 
       networks = []
-      reader.each('81.2.69.0/24') do |network, data|
+      reader.each('81.2.69.0/24') do |network, _data|
         networks << network.to_s
-        break if networks.length >= 3  # Just test first 3
+        break if networks.length >= 3 # Just test first 3
       end
 
       assert networks.length.positive?, "Should find networks in mode #{mode}"
@@ -369,9 +369,8 @@ class ReaderTest < Minitest::Test
     end
 
     # Collect all networks
-    all_networks = []
-    reader.each do |network, _data|
-      all_networks << network.to_s
+    all_networks = reader.map do |network, _data|
+      network.to_s
     end
 
     # Subset should be less than or equal to all
