@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2025-11-15
+
+### Added
+
+- Automated release script (`dev-bin/release.sh`) that validates changelog dates, updates gemspec version, runs tests, and creates GitHub releases
+
+### Changed
+
+- Updated actions/checkout from v4 to v5 in GitHub workflows
+
+### Fixed
+
+- Release workflow no longer runs twice (removed redundant triggers)
+
+### Removed
+
+- Unused test/maxmind-db-reader-ruby git submodule (documentation now references upstream repository by URL)
+
 ## [0.1.1] - 2025-11-15
 
 ### Fixed
