@@ -1,0 +1,34 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Release gem to RubyGems.org
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write   # Required for trusted publishing
+      contents: write   # Required for tag push
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ruby
+          bundler-cache: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Release gem
+        uses: rubygems/release-gem@v1
