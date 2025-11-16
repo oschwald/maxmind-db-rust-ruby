@@ -104,7 +104,12 @@ jobs:
           echo "Gems to be released:"
           ls -lh all-gems/
 
-      - name: Release gems
-        uses: rubygems/release-gem@v1
-        with:
-          gem-path: all-gems
+      - name: Configure RubyGems for trusted publishing
+        uses: rubygems/configure-rubygems-credentials@v1.0.0
+
+      - name: Publish gems to RubyGems.org
+        run: |
+          for gem in all-gems/*.gem; do
+            echo "Publishing $gem"
+            gem push "$gem"
+          done
