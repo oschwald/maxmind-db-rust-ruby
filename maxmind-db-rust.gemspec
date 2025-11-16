@@ -5,7 +5,7 @@ Gem::Specification.new do |s|
   s.files       = Dir['lib/**/*.rb', 'ext/**/*.{rs,toml,rb}', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md']
   s.name        = 'maxmind-db-rust'
   s.summary     = 'Unofficial high-performance Rust-based MaxMind DB reader for Ruby'
-  s.version     = '0.1.3'
+  s.version     = '0.1.4'
 
   s.description = 'An unofficial high-performance Rust-based gem for reading MaxMind DB files. ' \
                   'Provides API compatibility with the official maxmind-db gem while leveraging Rust ' \
