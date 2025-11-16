@@ -38,7 +38,7 @@ jobs:
 
       - name: Build native gem for ${{ matrix.platform }}
         run: |
-          bundle exec rake_compiler_dock -p ${{ matrix.platform }} -v "$(pwd):/work" -c "cd /work && bundle && rake native:${{ matrix.platform }} gem"
+          bundle exec rake native:${{ matrix.platform }} gem
 
       - name: Upload gem artifact
         uses: actions/upload-artifact@v4
