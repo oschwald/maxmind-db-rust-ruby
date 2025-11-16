@@ -32,6 +32,9 @@ jobs:
         with:
           ruby-version: "3.3"
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Build native gem
         uses: oxidize-rb/actions/cross-gem@v1
         id: cross-gem
