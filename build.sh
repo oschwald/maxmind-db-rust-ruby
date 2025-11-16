@@ -42,11 +42,12 @@ cd ../..
 # Copy to lib directory
 mkdir -p lib/maxmind/db
 
+# With workspace Cargo.toml, artifacts are in the workspace target/ directory
 # Handle platform-specific library extensions
 if [ "$(uname)" = "Darwin" ]; then
-    cp ext/maxmind_db_rust/target/release/libmaxmind_db_rust.dylib lib/maxmind/db/maxmind_db_rust.bundle
+    cp target/release/libmaxmind_db_rust.dylib lib/maxmind/db/maxmind_db_rust.bundle
     echo "✓ Build complete! Extension is at lib/maxmind/db/maxmind_db_rust.bundle"
 else
-    cp ext/maxmind_db_rust/target/release/libmaxmind_db_rust.so lib/maxmind/db/maxmind_db_rust.so
+    cp target/release/libmaxmind_db_rust.so lib/maxmind/db/maxmind_db_rust.so
     echo "✓ Build complete! Extension is at lib/maxmind/db/maxmind_db_rust.so"
 fi

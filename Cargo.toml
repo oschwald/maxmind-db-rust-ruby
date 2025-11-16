@@ -1,0 +1,3 @@
+[workspace]
+members = ["ext/maxmind_db_rust"]
+resolver = "2"

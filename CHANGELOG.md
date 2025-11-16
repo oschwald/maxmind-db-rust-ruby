@@ -7,24 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2025-11-16
+
 ### Added
 
-- Pre-compiled native gems for multiple platforms, eliminating compilation during installation:
+- Pre-compiled native gems for multiple platforms, eliminating the need to compile Rust during installation:
   - `x86_64-linux` (Linux x86_64)
   - `aarch64-linux` (Linux ARM64)
   - `x86_64-darwin` (macOS Intel)
   - `arm64-darwin` (macOS Apple Silicon)
   - `x64-mingw-ucrt` (Windows)
   - `x86_64-linux-musl` (Alpine Linux)
-- Cross-compilation support using `rake-compiler-dock`
-- Rake tasks for building native gems (`rake gem:native`, `rake gem:current`)
-- Automated multi-platform gem building in CI/CD pipeline
-- Source gem as fallback for unsupported platforms
-
-### Changed
-
-- Release workflow now builds and tests native gems on all branches and PRs
-- Release workflow renamed from "Release" to "Build and Release" to reflect dual purpose
+- Source gem as fallback for platforms without pre-compiled binaries
 
 ## [0.1.2] - 2025-11-15
 

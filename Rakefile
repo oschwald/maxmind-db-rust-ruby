@@ -3,16 +3,47 @@
 require 'bundler/gem_tasks'
 require 'rake/testtask'
 
-# Custom compile task for Rust extension
-desc 'Compile the Rust extension'
-task :compile do
-  sh 'bash build.sh'
+# Set up cross-compilation tasks for rb-sys-dock (used by CI)
+# Check for ARGV containing native: tasks or rb-sys-dock environment
+in_cross_compile_mode = ARGV.any? { |arg| arg.start_with?('native:') } || ENV.fetch('RB_SYS_DOCK_UID', nil)
+
+if in_cross_compile_mode
+  begin
+    require 'rb_sys/extensiontask'
+
+    GEMSPEC = Gem::Specification.load('maxmind-db-rust.gemspec')
+
+    RbSys::ExtensionTask.new('maxmind_db_rust', GEMSPEC) do |ext|
+      ext.lib_dir = 'lib/maxmind/db'
+      ext.cross_compile = true
+      ext.cross_platform = %w[
+        x86_64-linux
+        aarch64-linux
+        x86_64-darwin
+        arm64-darwin
+        x64-mingw-ucrt
+        x86_64-linux-musl
+      ]
+    end
+  rescue LoadError
+    # rb_sys not available - cross-compilation tasks won't be available
+  end
+end
+
+# Local development compile task (only if not in cross-compile mode)
+unless in_cross_compile_mode
+  desc 'Compile the Rust extension'
+  task :compile do
+    sh 'bash build.sh'
+  end
 end
 
 desc 'Clean build artifacts'
 task :clean do
-  sh 'cargo clean --manifest-path ext/maxmind_db_rust/Cargo.toml' if Dir.exist?('ext/maxmind_db_rust/target')
+  # With workspace Cargo.toml, clean from the workspace root
+  sh 'cargo clean' if Dir.exist?('target')
   rm_f 'lib/maxmind/db/maxmind_db_rust.so'
+  rm_f 'lib/maxmind/db/maxmind_db_rust.bundle'
   rm_rf 'pkg'
   rm_rf 'tmp'
 end
