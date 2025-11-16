@@ -437,11 +437,53 @@ We follow [Semantic Versioning](https://semver.org/):
    git push origin v0.2.0
    ```
 
-5. **Build and publish gem**:
-   ```bash
-   bundle exec rake build
-   gem push pkg/maxmind-db-rust-0.2.0.gem
-   ```
+5. **Create GitHub Release**:
+
+   Go to https://github.com/oschwald/maxmind-db-rust-ruby/releases/new and create a new release with tag `v0.2.0`.
+
+   The GitHub Actions workflow will automatically:
+   - Build native gems for all supported platforms:
+     - `x86_64-linux` (Linux x86_64)
+     - `aarch64-linux` (Linux ARM64)
+     - `x86_64-darwin` (macOS Intel)
+     - `arm64-darwin` (macOS Apple Silicon)
+     - `x64-mingw-ucrt` (Windows)
+     - `x86_64-linux-musl` (Alpine Linux)
+   - Build a source gem (fallback for unsupported platforms)
+   - Push all gems to RubyGems.org
+
+### Building Native Gems Locally (Optional)
+
+To build native gems locally for testing:
+
+```bash
+# Install Docker (required for rake-compiler-dock)
+
+# Build native gems for all platforms
+bundle exec rake gem:native
+
+# Build native gem for current platform only
+bundle exec rake gem:current
+
+# Gems will be created in pkg/ directory
+ls -lh pkg/
+```
+
+**Note**: Building all platforms locally requires Docker and can take 10-15 minutes. The CI/CD pipeline handles this automatically for releases.
+
+### Manual Release (If CI Fails)
+
+If you need to release manually:
+
+```bash
+# Build all native gems
+bundle exec rake gem:native
+
+# Push each gem to RubyGems
+for gem in pkg/*.gem; do
+  gem push "$gem"
+done
+```
 
 ## Performance Considerations
 

@@ -2,8 +2,14 @@
 
 require 'bundler/gem_tasks'
 require 'rake/testtask'
+require 'rb_sys/extensiontask'
 
-# Custom compile task for Rust extension
+# Configure the Rust extension task
+RbSys::ExtensionTask.new('maxmind_db_rust') do |ext|
+  ext.lib_dir = 'lib/maxmind/db'
+end
+
+# Custom compile task for Rust extension (for local development)
 desc 'Compile the Rust extension'
 task :compile do
   sh 'bash build.sh'
@@ -13,6 +19,35 @@ desc 'Clean build artifacts'
 task :clean do
   sh 'cargo clean --manifest-path ext/maxmind_db_rust/Cargo.toml' if Dir.exist?('ext/maxmind_db_rust/target')
   rm_f 'lib/maxmind/db/maxmind_db_rust.so'
+  rm_rf 'pkg'
+  rm_rf 'tmp'
+end
+
+# Cross-compilation tasks
+desc 'Build native gems for all platforms'
+task 'gem:native' do
+  require 'rake_compiler_dock'
+
+  # Platforms to build for
+  platforms = %w[
+    x86_64-linux
+    aarch64-linux
+    x86_64-darwin
+    arm64-darwin
+    x64-mingw-ucrt
+    x86_64-linux-musl
+  ]
+
+  platforms.each do |platform|
+    RakeCompilerDock.sh "bundle && rake native:#{platform} gem", platform: platform
+  end
+end
+
+namespace :gem do
+  desc 'Build native gem for current platform'
+  task :current do
+    sh 'rake native gem'
+  end
 end
 
 # Our own tests

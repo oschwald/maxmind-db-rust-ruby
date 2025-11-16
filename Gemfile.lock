@@ -69,6 +69,7 @@ DEPENDENCIES
   minitest (~> 5.0)
   rake (~> 13.0)
   rake-compiler (~> 1.2)
+  rake-compiler-dock (~> 1.5)
   rubocop (~> 1.0)
   rubocop-minitest (~> 0.36)
   rubocop-performance (~> 1.0)

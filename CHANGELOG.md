@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Pre-compiled native gems for multiple platforms, eliminating compilation during installation:
+  - `x86_64-linux` (Linux x86_64)
+  - `aarch64-linux` (Linux ARM64)
+  - `x86_64-darwin` (macOS Intel)
+  - `arm64-darwin` (macOS Apple Silicon)
+  - `x64-mingw-ucrt` (Windows)
+  - `x86_64-linux-musl` (Alpine Linux)
+- Cross-compilation support using `rake-compiler-dock`
+- Rake tasks for building native gems (`rake gem:native`, `rake gem:current`)
+- Automated multi-platform gem building in CI/CD pipeline
+- Source gem as fallback for unsupported platforms
+
+### Changed
+
+- Release workflow now builds and tests native gems on all branches and PRs
+- Release workflow renamed from "Release" to "Build and Release" to reflect dual purpose
+
 ## [0.1.2] - 2025-11-15
 
 ### Added
