@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2025-11-16
+
+### Fixed
+
+- Release workflow for publishing multiple platform-specific gems
+
 ## [0.1.3] - 2025-11-16
 
 ### Added
