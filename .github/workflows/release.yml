@@ -31,20 +31,19 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
-          bundler-cache: true
 
-      - name: Install dependencies
-        run: bundle install
-
-      - name: Build native gem for ${{ matrix.platform }}
-        run: |
-          bundle exec rake native:${{ matrix.platform }} gem
+      - name: Build native gem
+        uses: oxidize-rb/actions/cross-gem@v1
+        id: cross-gem
+        with:
+          platform: ${{ matrix.platform }}
+          ruby-versions: "3.2,3.3,3.4"
 
       - name: Upload gem artifact
         uses: actions/upload-artifact@v4
         with:
           name: gem-${{ matrix.platform }}
-          path: pkg/*.gem
+          path: ${{ steps.cross-gem.outputs.gem-path }}
           if-no-files-found: error
 
   # Build source gem (fallback for unsupported platforms)
