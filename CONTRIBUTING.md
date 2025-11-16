@@ -452,38 +452,9 @@ We follow [Semantic Versioning](https://semver.org/):
    - Build a source gem (fallback for unsupported platforms)
    - Push all gems to RubyGems.org
 
-### Building Native Gems Locally (Optional)
+### Building Native Gems
 
-To build native gems locally for testing:
-
-```bash
-# Install Docker (required for rake-compiler-dock)
-
-# Build native gems for all platforms
-bundle exec rake gem:native
-
-# Build native gem for current platform only
-bundle exec rake gem:current
-
-# Gems will be created in pkg/ directory
-ls -lh pkg/
-```
-
-**Note**: Building all platforms locally requires Docker and can take 10-15 minutes. The CI/CD pipeline handles this automatically for releases.
-
-### Manual Release (If CI Fails)
-
-If you need to release manually:
-
-```bash
-# Build all native gems
-bundle exec rake gem:native
-
-# Push each gem to RubyGems
-for gem in pkg/*.gem; do
-  gem push "$gem"
-done
-```
+Native gems for multiple platforms are built automatically by the CI/CD pipeline using the `oxidize-rb/actions/cross-gem` GitHub Action. The workflow handles cross-compilation for all supported platforms without requiring local Docker setup.
 
 ## Performance Considerations
 
