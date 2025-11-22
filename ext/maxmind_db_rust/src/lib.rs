@@ -79,6 +79,37 @@ define_interned_keys!(
     PT_BR_KEY => "pt-BR",
     RU_KEY => "ru",
     ZH_CN_KEY => "zh-CN",
+    // Common keys
+    CODE_KEY => "code",
+    NETWORK_KEY => "network",
+    IS_ANONYMOUS_PROXY_KEY => "is_anonymous_proxy",
+    IS_SATELLITE_PROVIDER_KEY => "is_satellite_provider",
+    // Continent codes
+    AF_KEY => "AF",
+    AN_KEY => "AN",
+    AS_KEY => "AS",
+    EU_KEY => "EU",
+    NA_KEY => "NA",
+    OC_KEY => "OC",
+    SA_KEY => "SA",
+    // Major Country ISO codes
+    US_VAL => "US",
+    CN_VAL => "CN",
+    JP_VAL => "JP",
+    DE_VAL => "DE",
+    IN_VAL => "IN",
+    GB_VAL => "GB",
+    FR_VAL => "FR",
+    BR_VAL => "BR",
+    IT_VAL => "IT",
+    CA_VAL => "CA",
+    RU_VAL => "RU", // Already defined above as RU_KEY? No, RU_KEY is "ru" (lang), this is "RU" (country)
+    KR_VAL => "KR",
+    AU_VAL => "AU",
+    ES_VAL => "ES", // "ES" (country) vs "es" (lang). ES_KEY is "es".
+    MX_VAL => "MX",
+    ID_VAL => "ID",
+    TR_VAL => "TR",
 );
 
 /// Wrapper that owns the Ruby value produced by deserializing a MaxMind record
