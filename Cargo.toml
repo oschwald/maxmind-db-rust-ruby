@@ -1,3 +1,8 @@
 [workspace]
 members = ["ext/maxmind_db_rust"]
 resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3

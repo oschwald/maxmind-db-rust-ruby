@@ -18,8 +18,3 @@ magnus = "0.8"
 maxminddb = { version = "0.26.0", features = ["unsafe-str-decode"] }
 memmap2 = "0.9"
 serde = "1.0"
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
-opt-level = 3
