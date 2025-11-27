@@ -2,13 +2,13 @@
 // Ruby validates UTF-8 when we construct `RString`s, so skipping the redundant check in
 // the decoder is safe and avoids re-validating every string record twice.
 use ::maxminddb as maxminddb_crate;
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
     error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, value::Lazy,
     ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
-use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within, WithinItem};
+use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
@@ -42,10 +42,100 @@ macro_rules! define_interned_keys {
         )*
 
         fn interned_key(ruby: &magnus::Ruby, key: &str) -> Option<Value> {
-            match key {
-                $(
-                $str => Some(ruby.get_inner(&$const_ident).as_value()),
-                )*
+            match key.len() {
+                2 => match key.as_bytes() {
+                    b"en" => Some(ruby.get_inner(&$crate::EN_KEY).as_value()),
+                    b"es" => Some(ruby.get_inner(&$crate::ES_KEY).as_value()),
+                    b"fr" => Some(ruby.get_inner(&$crate::FR_KEY).as_value()),
+                    b"ja" => Some(ruby.get_inner(&$crate::JA_KEY).as_value()),
+                    b"ru" => Some(ruby.get_inner(&$crate::RU_KEY).as_value()),
+                    b"AF" => Some(ruby.get_inner(&$crate::AF_KEY).as_value()),
+                    b"AN" => Some(ruby.get_inner(&$crate::AN_KEY).as_value()),
+                    b"AS" => Some(ruby.get_inner(&$crate::AS_KEY).as_value()),
+                    b"EU" => Some(ruby.get_inner(&$crate::EU_KEY).as_value()),
+                    b"NA" => Some(ruby.get_inner(&$crate::NA_KEY).as_value()),
+                    b"OC" => Some(ruby.get_inner(&$crate::OC_KEY).as_value()),
+                    b"SA" => Some(ruby.get_inner(&$crate::SA_KEY).as_value()),
+                    b"US" => Some(ruby.get_inner(&$crate::US_VAL).as_value()),
+                    b"CN" => Some(ruby.get_inner(&$crate::CN_VAL).as_value()),
+                    b"JP" => Some(ruby.get_inner(&$crate::JP_VAL).as_value()),
+                    b"DE" => Some(ruby.get_inner(&$crate::DE_VAL).as_value()),
+                    b"IN" => Some(ruby.get_inner(&$crate::IN_VAL).as_value()),
+                    b"GB" => Some(ruby.get_inner(&$crate::GB_VAL).as_value()),
+                    b"FR" => Some(ruby.get_inner(&$crate::FR_VAL).as_value()),
+                    b"BR" => Some(ruby.get_inner(&$crate::BR_VAL).as_value()),
+                    b"IT" => Some(ruby.get_inner(&$crate::IT_VAL).as_value()),
+                    b"CA" => Some(ruby.get_inner(&$crate::CA_VAL).as_value()),
+                    b"RU" => Some(ruby.get_inner(&$crate::RU_VAL).as_value()),
+                    b"KR" => Some(ruby.get_inner(&$crate::KR_VAL).as_value()),
+                    b"AU" => Some(ruby.get_inner(&$crate::AU_VAL).as_value()),
+                    b"ES" => Some(ruby.get_inner(&$crate::ES_VAL).as_value()),
+                    b"MX" => Some(ruby.get_inner(&$crate::MX_VAL).as_value()),
+                    b"ID" => Some(ruby.get_inner(&$crate::ID_VAL).as_value()),
+                    b"TR" => Some(ruby.get_inner(&$crate::TR_VAL).as_value()),
+                    _ => None,
+                },
+                4 => match key.as_bytes() {
+                    b"city" => Some(ruby.get_inner(&$crate::CITY_KEY).as_value()),
+                    b"code" => Some(ruby.get_inner(&$crate::CODE_KEY).as_value()),
+                    _ => None,
+                },
+                5 => match key.as_bytes() {
+                    b"names" => Some(ruby.get_inner(&$crate::NAMES_KEY).as_value()),
+                    b"pt-BR" => Some(ruby.get_inner(&$crate::PT_BR_KEY).as_value()),
+                    b"zh-CN" => Some(ruby.get_inner(&$crate::ZH_CN_KEY).as_value()),
+                    _ => None,
+                },
+                6 => match key.as_bytes() {
+                    b"postal" => Some(ruby.get_inner(&$crate::POSTAL_KEY).as_value()),
+                    b"traits" => Some(ruby.get_inner(&$crate::TRAITS_KEY).as_value()),
+                    _ => None,
+                },
+                7 => match key.as_bytes() {
+                    b"country" => Some(ruby.get_inner(&$crate::COUNTRY_KEY).as_value()),
+                    b"network" => Some(ruby.get_inner(&$crate::NETWORK_KEY).as_value()),
+                    _ => None,
+                },
+                8 => match key.as_bytes() {
+                    b"location" => Some(ruby.get_inner(&$crate::LOCATION_KEY).as_value()),
+                    b"iso_code" => Some(ruby.get_inner(&$crate::ISO_CODE_KEY).as_value()),
+                    b"latitude" => Some(ruby.get_inner(&$crate::LATITUDE_KEY).as_value()),
+                    _ => None,
+                },
+                9 => match key.as_bytes() {
+                    b"continent" => Some(ruby.get_inner(&$crate::CONTINENT_KEY).as_value()),
+                    b"longitude" => Some(ruby.get_inner(&$crate::LONGITUDE_KEY).as_value()),
+                    b"time_zone" => Some(ruby.get_inner(&$crate::TIME_ZONE_KEY).as_value()),
+                    _ => None,
+                },
+                10 => match key.as_bytes() {
+                    b"geoname_id" => Some(ruby.get_inner(&$crate::GEONAME_ID_KEY).as_value()),
+                    b"metro_code" => Some(ruby.get_inner(&$crate::METRO_CODE_KEY).as_value()),
+                    b"confidence" => Some(ruby.get_inner(&$crate::CONFIDENCE_KEY).as_value()),
+                    _ => None,
+                },
+                12 => match key.as_bytes() {
+                    b"subdivisions" => Some(ruby.get_inner(&$crate::SUBDIVISIONS_KEY).as_value()),
+                    _ => None,
+                },
+                15 => match key.as_bytes() {
+                    b"accuracy_radius" => Some(ruby.get_inner(&$crate::ACCURACY_RADIUS_KEY).as_value()),
+                    _ => None,
+                },
+                18 => match key.as_bytes() {
+                    b"registered_country" => Some(ruby.get_inner(&$crate::REGISTERED_COUNTRY_KEY).as_value()),
+                    b"population_density" => Some(ruby.get_inner(&$crate::POPULATION_DENSITY_KEY).as_value()),
+                    _ => None,
+                },
+                19 => match key.as_bytes() {
+                    b"represented_country" => Some(ruby.get_inner(&$crate::REPRESENTED_COUNTRY_KEY).as_value()),
+                    b"is_anonymous_proxy" => Some(ruby.get_inner(&$crate::IS_ANONYMOUS_PROXY_KEY).as_value()),
+                    _ => None,
+                },
+                21 => match key.as_bytes() {
+                    b"is_satellite_provider" => Some(ruby.get_inner(&$crate::IS_SATELLITE_PROVIDER_KEY).as_value()),
+                    _ => None,
+                },
                 _ => None,
             }
         }
@@ -320,8 +410,8 @@ impl ReaderSource {
         ip: IpAddr,
     ) -> Result<Option<RubyDecodedValue>, maxminddb_crate::MaxMindDbError> {
         match self {
-            ReaderSource::Mmap(reader) => reader.lookup(ip),
-            ReaderSource::Memory(reader) => reader.lookup(ip),
+            ReaderSource::Mmap(reader) => reader.lookup(ip)?.decode(),
+            ReaderSource::Memory(reader) => reader.lookup(ip)?.decode(),
         }
     }
 
@@ -330,10 +420,35 @@ impl ReaderSource {
         &self,
         ip: IpAddr,
     ) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
-        match self {
-            ReaderSource::Mmap(reader) => reader.lookup_prefix(ip),
-            ReaderSource::Memory(reader) => reader.lookup_prefix(ip),
-        }
+        let (result, prefix_len) = match self {
+            ReaderSource::Mmap(reader) => {
+                let result = reader.lookup(ip)?;
+                let network = result.network()?;
+                let prefix = network.prefix();
+
+                let prefix_len = if ip.is_ipv4() && network.is_ipv6() {
+                    0
+                } else {
+                    prefix as usize
+                };
+
+                (result.decode()?, prefix_len)
+            }
+            ReaderSource::Memory(reader) => {
+                let result = reader.lookup(ip)?;
+                let network = result.network()?;
+                let prefix = network.prefix();
+
+                let prefix_len = if ip.is_ipv4() && network.is_ipv6() {
+                    0
+                } else {
+                    prefix as usize
+                };
+
+                (result.decode()?, prefix_len)
+            }
+        };
+        Ok((result, prefix_len))
     }
 
     #[inline]
@@ -348,24 +463,18 @@ impl ReaderSource {
     fn within(&self, network: IpNetwork) -> Result<ReaderWithin, MaxMindDbError> {
         match self {
             ReaderSource::Mmap(reader) => {
-                let iter = reader.within::<RubyDecodedValue>(network)?;
+                let iter = reader.within(network, Default::default())?;
                 // SAFETY: the iterator holds a reference into `reader`. We'll store an Arc guard
                 // alongside it so the reader outlives the transmuted iterator.
                 Ok(ReaderWithin::Mmap(unsafe {
-                    std::mem::transmute::<
-                        Within<'_, RubyDecodedValue, Mmap>,
-                        Within<'static, RubyDecodedValue, Mmap>,
-                    >(iter)
+                    std::mem::transmute::<Within<'_, Mmap>, Within<'static, Mmap>>(iter)
                 }))
             }
             ReaderSource::Memory(reader) => {
-                let iter = reader.within::<RubyDecodedValue>(network)?;
+                let iter = reader.within(network, Default::default())?;
                 // SAFETY: same as above, the Arc guard keeps the reader alive.
                 Ok(ReaderWithin::Memory(unsafe {
-                    std::mem::transmute::<
-                        Within<'_, RubyDecodedValue, Vec<u8>>,
-                        Within<'static, RubyDecodedValue, Vec<u8>>,
-                    >(iter)
+                    std::mem::transmute::<Within<'_, Vec<u8>>, Within<'static, Vec<u8>>>(iter)
                 }))
             }
         }
@@ -374,15 +483,47 @@ impl ReaderSource {
 
 /// Wrapper enum for Within iterators
 enum ReaderWithin {
-    Mmap(Within<'static, RubyDecodedValue, Mmap>),
-    Memory(Within<'static, RubyDecodedValue, Vec<u8>>),
+    Mmap(Within<'static, Mmap>),
+    Memory(Within<'static, Vec<u8>>),
 }
 
 impl ReaderWithin {
-    fn next(&mut self) -> Option<Result<WithinItem<RubyDecodedValue>, MaxMindDbError>> {
+    fn next(&mut self) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
         match self {
-            ReaderWithin::Mmap(iter) => iter.next(),
-            ReaderWithin::Memory(iter) => iter.next(),
+            ReaderWithin::Mmap(iter) => loop {
+                match iter.next() {
+                    None => return None,
+                    Some(Err(e)) => return Some(Err(e)),
+                    Some(Ok(lookup_result)) => {
+                        let network = match lookup_result.network() {
+                            Ok(n) => n,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        match lookup_result.decode::<RubyDecodedValue>() {
+                            Ok(Some(data)) => return Some(Ok((network, data))),
+                            Ok(None) => continue, // Skip networks without data
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                }
+            },
+            ReaderWithin::Memory(iter) => loop {
+                match iter.next() {
+                    None => return None,
+                    Some(Err(e)) => return Some(Err(e)),
+                    Some(Ok(lookup_result)) => {
+                        let network = match lookup_result.network() {
+                            Ok(n) => n,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        match lookup_result.decode::<RubyDecodedValue>() {
+                            Ok(Some(data)) => return Some(Ok((network, data))),
+                            Ok(None) => continue, // Skip networks without data
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                }
+            },
         }
     }
 }
@@ -513,7 +654,9 @@ impl Reader {
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let reader = self.get_reader(&ruby)?;
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
 
         // Parse IP address
         let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
@@ -529,7 +672,7 @@ impl Reader {
         match reader.lookup(parsed_ip) {
             Ok(Some(data)) => Ok(data.into_value()),
             Ok(None) => Ok(ruby.qnil().as_value()),
-            Err(MaxMindDbError::InvalidDatabase(_)) | Err(MaxMindDbError::Io(_)) => {
+            Err(MaxMindDbError::InvalidDatabase { .. }) | Err(MaxMindDbError::Io(_)) => {
                 Err(Error::new(
                     ExceptionClass::from_value(invalid_database_error().as_value())
                         .expect("InvalidDatabaseError should convert to ExceptionClass"),
@@ -547,7 +690,9 @@ impl Reader {
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let reader = self.get_reader(&ruby)?;
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
 
         // Parse IP address
         let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
@@ -573,7 +718,7 @@ impl Reader {
                 arr.push(prefix.into_value_with(&ruby))?;
                 Ok(arr)
             }
-            Err(MaxMindDbError::InvalidDatabase(_)) | Err(MaxMindDbError::Io(_)) => {
+            Err(MaxMindDbError::InvalidDatabase { .. }) | Err(MaxMindDbError::Io(_)) => {
                 Err(Error::new(
                     ExceptionClass::from_value(invalid_database_error().as_value())
                         .expect("InvalidDatabaseError should convert to ExceptionClass"),
@@ -590,7 +735,9 @@ impl Reader {
     fn metadata(&self) -> Result<Metadata, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let reader = self.get_reader(&ruby)?;
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
         let meta = reader.metadata();
 
         Ok(Metadata {
@@ -620,7 +767,9 @@ impl Reader {
     fn each(&self, args: &[Value]) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let reader = self.get_reader(&ruby)?;
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
 
         // If no block given, return enumerator
         if !ruby.block_given() {
@@ -712,16 +861,16 @@ impl Reader {
         // Iterate over all networks
         while let Some(result) = iter.next() {
             match result {
-                Ok(item) => {
+                Ok((network, data)) => {
                     // Convert IpNetwork to IPAddr
-                    let ip_str = item.ip_net.to_string();
+                    let ip_str = network.to_string();
                     let ipaddr = ipaddr_class.funcall::<_, _, Value>("new", (ip_str,))?;
 
                     // Yield [network, data] to block
-                    let values = (ipaddr, item.info.into_value());
+                    let values = (ipaddr, data.into_value());
                     ruby.yield_values::<(Value, Value), Value>(values)?;
                 }
-                Err(MaxMindDbError::InvalidDatabase(_)) | Err(MaxMindDbError::Io(_)) => {
+                Err(MaxMindDbError::InvalidDatabase { .. }) | Err(MaxMindDbError::Io(_)) => {
                     return Err(Error::new(
                         ExceptionClass::from_value(invalid_database_error().as_value())
                             .expect("InvalidDatabaseError should convert to ExceptionClass"),
@@ -741,10 +890,12 @@ impl Reader {
     }
 
     /// Helper method to get the reader from the ArcSwapOption
-    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Arc<ReaderSource>, Error> {
-        self.reader
-            .load_full()
-            .ok_or_else(|| Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB))
+    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Guard<Option<Arc<ReaderSource>>>, Error> {
+        let guard = self.reader.load();
+        if guard.is_none() {
+            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
+        }
+        Ok(guard)
     }
 }
 
