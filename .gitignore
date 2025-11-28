@@ -1,4 +1,5 @@
 /.bundle/
+/.cargo/
 /.claude/
 /.yardoc
 /_yardoc/
