@@ -11,7 +11,6 @@
 
 # Rust build artifacts
 /target/
-Cargo.lock
 /ext/maxmind_db_rust/target/
 
 # Native extension artifacts
