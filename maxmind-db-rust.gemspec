@@ -28,7 +28,7 @@ Gem::Specification.new do |s|
 
   s.add_dependency 'rb_sys', '~> 0.9'
 
-  s.add_development_dependency 'minitest', '~> 5.0'
+  s.add_development_dependency 'minitest', '~> 6.0'
   s.add_development_dependency 'rake', '~> 13.0'
   s.add_development_dependency 'rake-compiler', '~> 1.2'
   s.add_development_dependency 'rake-compiler-dock', '~> 1.5'
