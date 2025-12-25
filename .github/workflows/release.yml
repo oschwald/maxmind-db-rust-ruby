@@ -30,14 +30,14 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3"
+          ruby-version: "4.0"
 
       - name: Build native gem
         uses: oxidize-rb/actions/cross-gem@v1
         id: cross-gem
         with:
           platform: ${{ matrix.platform }}
-          ruby-versions: "3.2,3.3,3.4"
+          ruby-versions: "3.2,3.3,3.4,4.0"
 
       - name: Upload gem artifact
         uses: actions/upload-artifact@v6
@@ -58,7 +58,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3"
+          ruby-version: "4.0"
           bundler-cache: true
 
       - name: Build source gem
@@ -90,7 +90,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3"
+          ruby-version: "4.0"
 
       - name: Download all gem artifacts
         uses: actions/download-artifact@v7
