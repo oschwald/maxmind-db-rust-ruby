@@ -302,35 +302,10 @@ impl ReaderSource {
         &self,
         ip: IpAddr,
     ) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
-        let (result, prefix_len) = match self {
-            ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip)?;
-                let network = result.network()?;
-                let prefix = network.prefix();
-
-                let prefix_len = if ip.is_ipv4() && network.is_ipv6() {
-                    0
-                } else {
-                    prefix as usize
-                };
-
-                (result.decode()?, prefix_len)
-            }
-            ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip)?;
-                let network = result.network()?;
-                let prefix = network.prefix();
-
-                let prefix_len = if ip.is_ipv4() && network.is_ipv6() {
-                    0
-                } else {
-                    prefix as usize
-                };
-
-                (result.decode()?, prefix_len)
-            }
-        };
-        Ok((result, prefix_len))
+        match self {
+            ReaderSource::Mmap(reader) => lookup_prefix_for_reader(reader, ip),
+            ReaderSource::Memory(reader) => lookup_prefix_for_reader(reader, ip),
+        }
     }
 
     #[inline]
@@ -372,40 +347,54 @@ enum ReaderWithin {
 impl ReaderWithin {
     fn next(&mut self) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
         match self {
-            ReaderWithin::Mmap(iter) => loop {
-                match iter.next() {
-                    None => return None,
-                    Some(Err(e)) => return Some(Err(e)),
-                    Some(Ok(lookup_result)) => {
-                        let network = match lookup_result.network() {
-                            Ok(n) => n,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        match lookup_result.decode::<RubyDecodedValue>() {
-                            Ok(Some(data)) => return Some(Ok((network, data))),
-                            Ok(None) => continue, // Skip networks without data
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
+            ReaderWithin::Mmap(iter) => next_within_result(iter),
+            ReaderWithin::Memory(iter) => next_within_result(iter),
+        }
+    }
+}
+
+#[inline]
+fn lookup_prefix_for_reader<S: AsRef<[u8]>>(
+    reader: &MaxMindReader<S>,
+    ip: IpAddr,
+) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
+    let result = reader.lookup(ip)?;
+    let network = result.network()?;
+    let prefix_len = prefix_len_for_ip_network(ip, network);
+    Ok((result.decode()?, prefix_len))
+}
+
+#[inline]
+// prefix_len_for_ip_network uses 0 as a sentinel for ip.is_ipv4() && network.is_ipv6().
+// In this case, 0 is not a real prefix length; it signals an IPv4-in-IPv6 mapping path,
+// and callers must treat it specially (distinct from "no network found").
+fn prefix_len_for_ip_network(ip: IpAddr, network: IpNetwork) -> usize {
+    if ip.is_ipv4() && network.is_ipv6() {
+        0
+    } else {
+        network.prefix() as usize
+    }
+}
+
+#[inline]
+fn next_within_result<S: AsRef<[u8]>>(
+    iter: &mut Within<'static, S>,
+) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
+    loop {
+        match iter.next() {
+            None => return None,
+            Some(Err(e)) => return Some(Err(e)),
+            Some(Ok(lookup_result)) => {
+                let network = match lookup_result.network() {
+                    Ok(n) => n,
+                    Err(e) => return Some(Err(e)),
+                };
+                match lookup_result.decode::<RubyDecodedValue>() {
+                    Ok(Some(data)) => return Some(Ok((network, data))),
+                    Ok(None) => continue, // Skip networks without data
+                    Err(e) => return Some(Err(e)),
                 }
-            },
-            ReaderWithin::Memory(iter) => loop {
-                match iter.next() {
-                    None => return None,
-                    Some(Err(e)) => return Some(Err(e)),
-                    Some(Ok(lookup_result)) => {
-                        let network = match lookup_result.network() {
-                            Ok(n) => n,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        match lookup_result.decode::<RubyDecodedValue>() {
-                            Ok(Some(data)) => return Some(Ok((network, data))),
-                            Ok(None) => continue, // Skip networks without data
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
-                }
-            },
+            }
         }
     }
 }
