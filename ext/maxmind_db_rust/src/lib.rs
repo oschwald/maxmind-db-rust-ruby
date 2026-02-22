@@ -950,10 +950,12 @@ fn rust_module(ruby: &magnus::Ruby) -> RModule {
         .const_get::<_, RModule>("MaxMind")
         .expect("MaxMind module should exist");
     let db = maxmind
-        .const_get::<_, RModule>("DB")
-        .expect("MaxMind::DB module should exist");
-    db.const_get::<_, RModule>("Rust")
-        .expect("MaxMind::DB::Rust module should exist")
+        .const_get::<_, Value>("DB")
+        .expect("MaxMind::DB constant should exist");
+    let rust_value = db
+        .funcall::<_, _, Value>("const_get", ("Rust",))
+        .expect("MaxMind::DB::Rust constant should exist");
+    RModule::from_value(rust_value).expect("MaxMind::DB::Rust should be a module")
 }
 
 #[magnus::init]
@@ -967,11 +969,26 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     let rust = match db_value {
         Ok(existing) if existing.is_kind_of(ruby.class_class()) => {
             // MaxMind::DB exists as a Class (official gem loaded first)
-            // Define Rust module directly as a constant on the class using funcall
-            let rust_mod = ruby.define_module("MaxMindDBRustTemp")?;
-            // Use const_set via funcall on the existing class/module
-            let _ = existing.funcall::<_, _, Value>("const_set", ("Rust", rust_mod))?;
-            rust_mod
+            // Reuse existing Rust constant if present to avoid replacing classes.
+            if let Ok(rust_value) = existing.funcall::<_, _, Value>("const_get", ("Rust", false)) {
+                RModule::from_value(rust_value).ok_or_else(|| {
+                    Error::new(
+                        ruby.exception_type_error(),
+                        "MaxMind::DB::Rust exists but is not a module",
+                    )
+                })?
+            } else {
+                // Define Rust module directly as a constant on the class.
+                let rust_value: Value = ruby.module_new().as_value();
+                let rust_mod = RModule::from_value(rust_value).ok_or_else(|| {
+                    Error::new(
+                        ruby.exception_type_error(),
+                        "Failed to create anonymous module for MaxMind::DB::Rust",
+                    )
+                })?;
+                let _ = existing.funcall::<_, _, Value>("const_set", ("Rust", rust_mod))?;
+                rust_mod
+            }
         }
         Ok(existing) => {
             // MaxMind::DB exists as a Module (our gem loaded first)
