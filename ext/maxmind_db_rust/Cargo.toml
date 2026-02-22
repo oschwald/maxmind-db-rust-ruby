@@ -12,7 +12,7 @@ name = "maxmind_db_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
-arc-swap = "1.7"
+arc-swap = "1.8"
 ipnetwork = "0.21"
 magnus = "0.8"
 maxminddb = { version = "0.27", features = ["unsafe-str-decode"] }
