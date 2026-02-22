@@ -10,10 +10,11 @@ use magnus::{
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
+use rustc_hash::FxHashMap;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fmt,
     fs::File,
     io::Read as IoRead,
@@ -39,14 +40,14 @@ const MAP_KEY_CACHE_MAX: usize = 256;
 const MAP_KEY_ROOTS_CONST: &str = "__MAP_KEY_ROOTS__";
 
 struct MapKeyCache {
-    key_to_index: HashMap<String, usize>,
+    key_to_index: FxHashMap<String, usize>,
 }
 
 impl MapKeyCache {
     #[inline]
     fn new() -> Self {
         Self {
-            key_to_index: HashMap::new(),
+            key_to_index: FxHashMap::default(),
         }
     }
 }
@@ -958,6 +959,12 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
 /// Get the InvalidDatabaseError class
 fn invalid_database_error() -> RClass {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
+    let rust = rust_module(&ruby);
+    rust.const_get::<_, RClass>("InvalidDatabaseError")
+        .expect("InvalidDatabaseError class should exist")
+}
+
+fn rust_module(ruby: &magnus::Ruby) -> RModule {
     let maxmind = ruby
         .class_object()
         .const_get::<_, RModule>("MaxMind")
@@ -965,11 +972,8 @@ fn invalid_database_error() -> RClass {
     let db = maxmind
         .const_get::<_, RModule>("DB")
         .expect("MaxMind::DB module should exist");
-    let rust = db
-        .const_get::<_, RModule>("Rust")
-        .expect("MaxMind::DB::Rust module should exist");
-    rust.const_get::<_, RClass>("InvalidDatabaseError")
-        .expect("InvalidDatabaseError class should exist")
+    db.const_get::<_, RModule>("Rust")
+        .expect("MaxMind::DB::Rust module should exist")
 }
 
 #[magnus::init]
@@ -1003,6 +1007,15 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
         }
     };
 
+    if rust.const_get::<_, Value>(MAP_KEY_ROOTS_CONST).is_err() {
+        rust.const_set(MAP_KEY_ROOTS_CONST, ruby.ary_new_capa(MAP_KEY_CACHE_MAX))?;
+    }
+
+    // The extension can be loaded more than once from different paths.
+    // Reusing previously defined classes avoids typed-data incompatibilities.
+    if rust.const_get::<_, Value>("Reader").is_ok() {
+        return Ok(());
+    }
     // Define InvalidDatabaseError
     let runtime_error = ruby.exception_runtime_error();
     rust.define_error("InvalidDatabaseError", runtime_error)?;

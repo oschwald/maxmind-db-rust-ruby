@@ -17,4 +17,5 @@ ipnetwork = "0.21"
 magnus = "0.8"
 maxminddb = { version = "0.27", features = ["unsafe-str-decode"] }
 memmap2 = "0.9"
+rustc-hash = "2.1"
 serde = "1.0"
