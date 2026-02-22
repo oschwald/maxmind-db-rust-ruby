@@ -816,6 +816,32 @@ fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Er
     }
 
     // Slow path: Try as IPAddr object
+    if let Ok(ipaddr_class) = ruby.class_object().const_get::<_, RClass>("IPAddr") {
+        if value.is_kind_of(ipaddr_class) {
+            let packed: Value = value.funcall("hton", ())?;
+            if let Some(packed_str) = RString::from_value(packed) {
+                // SAFETY: `bytes` is used immediately and `packed`/`packed_str` stay alive and
+                // unmodified through the end of this match. This block must not introduce calls
+                // that could move, collect, or mutate the Ruby string between `as_slice()` and
+                // the final byte-pattern match handling.
+                let bytes = unsafe { packed_str.as_slice() };
+                return match bytes {
+                    [a, b, c, d] => Ok(IpAddr::from([*a, *b, *c, *d])),
+                    [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15] => {
+                        Ok(IpAddr::from([
+                            *a0, *a1, *a2, *a3, *a4, *a5, *a6, *a7, *a8, *a9, *a10, *a11, *a12,
+                            *a13, *a14, *a15,
+                        ]))
+                    }
+                    _ => Err(Error::new(
+                        ruby.exception_arg_error(),
+                        format!("'{}' does not appear to be an IPv4 or IPv6 address", value),
+                    )),
+                };
+            }
+        }
+    }
+
     if let Ok(ipaddr_obj) = value.funcall::<_, _, String>("to_s", ()) {
         return IpAddr::from_str(&ipaddr_obj).map_err(|_| {
             Error::new(
