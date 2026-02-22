@@ -3,18 +3,19 @@
 [![Test](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/test.yml/badge.svg)](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/test.yml)
 [![Lint](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/lint.yml/badge.svg)](https://github.com/oschwald/maxmind-db-rust-ruby/actions/workflows/lint.yml)
 
-A high-performance Rust-based Ruby gem for reading MaxMind DB files. Provides API compatibility with the official `maxmind-db` gem while leveraging Rust for superior performance.
+A Ruby gem for reading MaxMind DB files, implemented in Rust.
+It keeps the API close to the official `maxmind-db` gem while adding Rust-backed performance.
 
 > **Note:** This is an unofficial library and is not endorsed by MaxMind. For the official Ruby library, see [maxmind-db](https://github.com/maxmind/MaxMind-DB-Reader-ruby).
 
 ## Features
 
-- **High Performance**: Rust-based implementation provides significantly faster lookups than pure Ruby
-- **API Compatible**: Familiar API similar to the official MaxMind::DB gem
-- **Thread-Safe**: Safe to use from multiple threads
-- **Memory Modes**: Support for both memory-mapped (MMAP) and in-memory modes
-- **Iterator Support**: Iterate over all networks in the database (extension feature)
-- **Type Support**: Works with both String and IPAddr objects
+- Rust implementation focused on fast lookups
+- API modeled after the official `maxmind-db` gem
+- Thread-safe lookups
+- Supports MMAP and in-memory modes
+- Includes network iteration support
+- Accepts both `String` and `IPAddr` inputs
 
 ## Installation
 
@@ -277,30 +278,31 @@ Metadata attributes:
 
 ## Comparison with Official Gem
 
-| Feature          | maxmind-db (official) | maxmind-db-rust (this gem) |
-| ---------------- | --------------------- | -------------------------- |
-| Implementation   | Pure Ruby             | Rust with Ruby bindings    |
-| Performance      | Baseline              | 10-50x faster              |
-| API              | MaxMind::DB           | MaxMind::DB::Rust          |
-| MODE_FILE        | ✓                     | ✗                          |
-| MODE_MEMORY      | ✓                     | ✓                          |
-| MODE_AUTO        | ✓                     | ✓                          |
-| MODE_MMAP        | ✗                     | ✓                          |
-| Iterator support | ✗                     | ✓                          |
-| Thread-safe      | ✓                     | ✓                          |
+| Feature          | maxmind-db (official) | maxmind-db-rust (this gem)                 |
+| ---------------- | --------------------- | ------------------------------------------ |
+| Implementation   | Pure Ruby             | Rust with Ruby bindings                    |
+| Performance      | Baseline              | Faster lookup throughput in our benchmarks |
+| API              | MaxMind::DB           | MaxMind::DB::Rust                          |
+| MODE_FILE        | ✓                     | ✗                                          |
+| MODE_MEMORY      | ✓                     | ✓                                          |
+| MODE_AUTO        | ✓                     | ✓                                          |
+| MODE_MMAP        | ✗                     | ✓                                          |
+| Iterator support | ✗                     | ✓                                          |
+| Thread-safe      | ✓                     | ✓                                          |
 
 ## Performance
 
-Expected performance characteristics (will vary based on hardware):
+Lookup performance depends on hardware, Ruby version, database, and workload.
 
-- Single-threaded lookups: 300,000 - 500,000 lookups/second
-- Significantly faster than pure Ruby implementations
-- Memory-mapped mode (MMAP) provides best performance
-- Fully thread-safe for concurrent lookups
+- In this project’s random-lookup benchmarks, this gem is consistently faster than the official Ruby implementation.
+- On `/var/lib/GeoIP/GeoIP2-City.mmdb` in this environment, random lookup throughput was about `47x` higher than the official gem.
+- `MODE_MMAP` and `MODE_MEMORY` both perform well; which is faster can vary by environment.
+- For reproducible numbers on your own data, run `benchmark/compare_lookups.rb` against your database.
+- Safe for concurrent lookups across threads.
 
 ## Development
 
-Interested in contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed developer documentation, including:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for developer documentation, including:
 
 - Development setup and prerequisites
 - Building and testing the extension
@@ -321,11 +323,11 @@ bundle exec rake test
 
 ## Contributing
 
-1. Fork it
-2. Create your feature branch (`git checkout -b my-new-feature`)
-3. Commit your changes (`git commit -am 'Add some feature'`)
+1. Fork the repository
+2. Create a feature branch (`git checkout -b my-new-feature`)
+3. Commit your changes (`git commit -am 'Describe your change'`)
 4. Push to the branch (`git push origin my-new-feature`)
-5. Create a new Pull Request
+5. Open a Pull Request
 
 ## License
 

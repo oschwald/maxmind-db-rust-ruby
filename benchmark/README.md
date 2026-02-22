@@ -1,10 +1,10 @@
 # Benchmarks
 
-This directory contains performance benchmarks for the maxmind-db-rust gem.
+This directory contains benchmark scripts for `maxmind-db-rust`.
 
 ## compare_lookups.rb
 
-Compares the performance of random IP lookups between the official MaxMind Ruby gem and this Rust implementation.
+Compares random IP lookup throughput between the official MaxMind Ruby gem and this Rust implementation.
 
 ### Usage
 
@@ -38,7 +38,7 @@ To compare against the official MaxMind gem, install it first:
 gem install maxmind-db
 ```
 
-Then run the benchmark - it will automatically detect and compare both implementations.
+Then run the benchmark. It will automatically detect and compare both implementations.
 
 ### What it Measures
 
@@ -83,15 +83,13 @@ SUMMARY
 Official (FILE):         171962.59 lookups/sec
 Rust (MMAP):            5688042.06 lookups/sec (33.08x)
 Rust (Memory):          5714401.33 lookups/sec (33.23x)
-
-🚀 Rust (MMAP) is 3207.7% faster than official gem
-💾 Rust Memory mode is 0.5% faster than MMAP mode
 ```
 
 ### Notes
 
-- The benchmark uses random IP addresses, so actual performance may vary with real-world data
-- Memory mode loads the entire database into RAM for maximum speed
-- MMAP mode uses memory-mapped I/O, balancing speed and memory usage
-- The official gem uses FILE mode (which uses mmap internally) for comparison
-- The Rust implementation is typically **30-35x faster** than the official Ruby gem
+- The benchmark uses random IP addresses, so your results may vary with your real query mix.
+- Memory mode loads the whole database into RAM.
+- MMAP mode uses memory-mapped I/O and usually has similar lookup throughput.
+- The official gem is benchmarked in `MODE_FILE` (which uses mmap internally).
+- In this environment, using `/var/lib/GeoIP/GeoIP2-City.mmdb` with 50k random lookups, Rust measured about `47x` higher throughput than the official gem.
+- Use this script on your production-like database to get realistic numbers for your environment.
