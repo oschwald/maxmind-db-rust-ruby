@@ -861,24 +861,7 @@ fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
 fn open_database_mmap(path: &str) -> Result<Reader, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-
-    let file = File::open(Path::new(path)).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            let errno = ruby
-                .class_object()
-                .const_get::<_, RModule>("Errno")
-                .expect("Errno module should exist");
-            let enoent = errno
-                .const_get::<_, RClass>("ENOENT")
-                .expect("Errno::ENOENT should exist");
-            Error::new(
-                ExceptionClass::from_value(enoent.as_value())
-                    .expect("ENOENT should convert to ExceptionClass"),
-                e.to_string(),
-            )
-        }
-        _ => Error::new(ruby.exception_io_error(), e.to_string()),
-    })?;
+    let file = open_database_file(path, &ruby)?;
 
     let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
         Error::new(
@@ -904,24 +887,7 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
 fn open_database_memory(path: &str) -> Result<Reader, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-
-    let mut file = File::open(Path::new(path)).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            let errno = ruby
-                .class_object()
-                .const_get::<_, RModule>("Errno")
-                .expect("Errno module should exist");
-            let enoent = errno
-                .const_get::<_, RClass>("ENOENT")
-                .expect("Errno::ENOENT should exist");
-            Error::new(
-                ExceptionClass::from_value(enoent.as_value())
-                    .expect("ENOENT should convert to ExceptionClass"),
-                e.to_string(),
-            )
-        }
-        _ => Error::new(ruby.exception_io_error(), e.to_string()),
-    })?;
+    let mut file = open_database_file(path, &ruby)?;
 
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).map_err(|e| {
@@ -943,6 +909,31 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
     })?;
 
     Ok(create_reader(ReaderSource::Memory(reader)))
+}
+
+fn open_database_file(path: &str, ruby: &magnus::Ruby) -> Result<File, Error> {
+    File::open(Path::new(path)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            open_not_found_error(ruby, e)
+        } else {
+            Error::new(ruby.exception_io_error(), e.to_string())
+        }
+    })
+}
+
+fn open_not_found_error(ruby: &magnus::Ruby, err: std::io::Error) -> Error {
+    let errno = ruby
+        .class_object()
+        .const_get::<_, RModule>("Errno")
+        .expect("Errno module should exist");
+    let enoent = errno
+        .const_get::<_, RClass>("ENOENT")
+        .expect("Errno::ENOENT should exist");
+    Error::new(
+        ExceptionClass::from_value(enoent.as_value())
+            .expect("ENOENT should convert to ExceptionClass"),
+        err.to_string(),
+    )
 }
 
 /// Get the InvalidDatabaseError class
