@@ -5,14 +5,15 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, value::Lazy,
-    ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
+    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, ExceptionClass,
+    IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
+use rustc_hash::FxHashMap;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
-    borrow::Cow,
+    cell::RefCell,
     collections::BTreeMap,
     fmt,
     fs::File,
@@ -31,176 +32,58 @@ const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 const ERR_BAD_DATA: &str =
     "The MaxMind DB file's data section contains bad data (unknown data type or corrupt data)";
 
-macro_rules! define_interned_keys {
-    ( $( $const_ident:ident => $str:expr ),* $(,)? ) => {
-        $(
-            static $const_ident: Lazy<RString> = Lazy::new(|ruby| {
-                let s = ruby.str_new($str);
-                s.freeze();
-                s
-            });
-        )*
-
-        fn interned_key(ruby: &magnus::Ruby, key: &str) -> Option<Value> {
-            match key.len() {
-                2 => match key.as_bytes() {
-                    b"en" => Some(ruby.get_inner(&$crate::EN_KEY).as_value()),
-                    b"es" => Some(ruby.get_inner(&$crate::ES_KEY).as_value()),
-                    b"fr" => Some(ruby.get_inner(&$crate::FR_KEY).as_value()),
-                    b"ja" => Some(ruby.get_inner(&$crate::JA_KEY).as_value()),
-                    b"ru" => Some(ruby.get_inner(&$crate::RU_KEY).as_value()),
-                    b"AF" => Some(ruby.get_inner(&$crate::AF_KEY).as_value()),
-                    b"AN" => Some(ruby.get_inner(&$crate::AN_KEY).as_value()),
-                    b"AS" => Some(ruby.get_inner(&$crate::AS_KEY).as_value()),
-                    b"EU" => Some(ruby.get_inner(&$crate::EU_KEY).as_value()),
-                    b"NA" => Some(ruby.get_inner(&$crate::NA_KEY).as_value()),
-                    b"OC" => Some(ruby.get_inner(&$crate::OC_KEY).as_value()),
-                    b"SA" => Some(ruby.get_inner(&$crate::SA_KEY).as_value()),
-                    b"US" => Some(ruby.get_inner(&$crate::US_VAL).as_value()),
-                    b"CN" => Some(ruby.get_inner(&$crate::CN_VAL).as_value()),
-                    b"JP" => Some(ruby.get_inner(&$crate::JP_VAL).as_value()),
-                    b"DE" => Some(ruby.get_inner(&$crate::DE_VAL).as_value()),
-                    b"IN" => Some(ruby.get_inner(&$crate::IN_VAL).as_value()),
-                    b"GB" => Some(ruby.get_inner(&$crate::GB_VAL).as_value()),
-                    b"FR" => Some(ruby.get_inner(&$crate::FR_VAL).as_value()),
-                    b"BR" => Some(ruby.get_inner(&$crate::BR_VAL).as_value()),
-                    b"IT" => Some(ruby.get_inner(&$crate::IT_VAL).as_value()),
-                    b"CA" => Some(ruby.get_inner(&$crate::CA_VAL).as_value()),
-                    b"RU" => Some(ruby.get_inner(&$crate::RU_VAL).as_value()),
-                    b"KR" => Some(ruby.get_inner(&$crate::KR_VAL).as_value()),
-                    b"AU" => Some(ruby.get_inner(&$crate::AU_VAL).as_value()),
-                    b"ES" => Some(ruby.get_inner(&$crate::ES_VAL).as_value()),
-                    b"MX" => Some(ruby.get_inner(&$crate::MX_VAL).as_value()),
-                    b"ID" => Some(ruby.get_inner(&$crate::ID_VAL).as_value()),
-                    b"TR" => Some(ruby.get_inner(&$crate::TR_VAL).as_value()),
-                    _ => None,
-                },
-                4 => match key.as_bytes() {
-                    b"city" => Some(ruby.get_inner(&$crate::CITY_KEY).as_value()),
-                    b"code" => Some(ruby.get_inner(&$crate::CODE_KEY).as_value()),
-                    _ => None,
-                },
-                5 => match key.as_bytes() {
-                    b"names" => Some(ruby.get_inner(&$crate::NAMES_KEY).as_value()),
-                    b"pt-BR" => Some(ruby.get_inner(&$crate::PT_BR_KEY).as_value()),
-                    b"zh-CN" => Some(ruby.get_inner(&$crate::ZH_CN_KEY).as_value()),
-                    _ => None,
-                },
-                6 => match key.as_bytes() {
-                    b"postal" => Some(ruby.get_inner(&$crate::POSTAL_KEY).as_value()),
-                    b"traits" => Some(ruby.get_inner(&$crate::TRAITS_KEY).as_value()),
-                    _ => None,
-                },
-                7 => match key.as_bytes() {
-                    b"country" => Some(ruby.get_inner(&$crate::COUNTRY_KEY).as_value()),
-                    b"network" => Some(ruby.get_inner(&$crate::NETWORK_KEY).as_value()),
-                    _ => None,
-                },
-                8 => match key.as_bytes() {
-                    b"location" => Some(ruby.get_inner(&$crate::LOCATION_KEY).as_value()),
-                    b"iso_code" => Some(ruby.get_inner(&$crate::ISO_CODE_KEY).as_value()),
-                    b"latitude" => Some(ruby.get_inner(&$crate::LATITUDE_KEY).as_value()),
-                    _ => None,
-                },
-                9 => match key.as_bytes() {
-                    b"continent" => Some(ruby.get_inner(&$crate::CONTINENT_KEY).as_value()),
-                    b"longitude" => Some(ruby.get_inner(&$crate::LONGITUDE_KEY).as_value()),
-                    b"time_zone" => Some(ruby.get_inner(&$crate::TIME_ZONE_KEY).as_value()),
-                    _ => None,
-                },
-                10 => match key.as_bytes() {
-                    b"geoname_id" => Some(ruby.get_inner(&$crate::GEONAME_ID_KEY).as_value()),
-                    b"metro_code" => Some(ruby.get_inner(&$crate::METRO_CODE_KEY).as_value()),
-                    b"confidence" => Some(ruby.get_inner(&$crate::CONFIDENCE_KEY).as_value()),
-                    _ => None,
-                },
-                12 => match key.as_bytes() {
-                    b"subdivisions" => Some(ruby.get_inner(&$crate::SUBDIVISIONS_KEY).as_value()),
-                    _ => None,
-                },
-                15 => match key.as_bytes() {
-                    b"accuracy_radius" => Some(ruby.get_inner(&$crate::ACCURACY_RADIUS_KEY).as_value()),
-                    _ => None,
-                },
-                18 => match key.as_bytes() {
-                    b"registered_country" => Some(ruby.get_inner(&$crate::REGISTERED_COUNTRY_KEY).as_value()),
-                    b"population_density" => Some(ruby.get_inner(&$crate::POPULATION_DENSITY_KEY).as_value()),
-                    _ => None,
-                },
-                19 => match key.as_bytes() {
-                    b"represented_country" => Some(ruby.get_inner(&$crate::REPRESENTED_COUNTRY_KEY).as_value()),
-                    b"is_anonymous_proxy" => Some(ruby.get_inner(&$crate::IS_ANONYMOUS_PROXY_KEY).as_value()),
-                    _ => None,
-                },
-                21 => match key.as_bytes() {
-                    b"is_satellite_provider" => Some(ruby.get_inner(&$crate::IS_SATELLITE_PROVIDER_KEY).as_value()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        }
-    };
+thread_local! {
+    static MAP_KEY_CACHE: RefCell<MapKeyCache> = RefCell::new(MapKeyCache::new());
 }
 
-define_interned_keys!(
-    CITY_KEY => "city",
-    CONTINENT_KEY => "continent",
-    COUNTRY_KEY => "country",
-    REGISTERED_COUNTRY_KEY => "registered_country",
-    REPRESENTED_COUNTRY_KEY => "represented_country",
-    SUBDIVISIONS_KEY => "subdivisions",
-    LOCATION_KEY => "location",
-    POSTAL_KEY => "postal",
-    TRAITS_KEY => "traits",
-    NAMES_KEY => "names",
-    GEONAME_ID_KEY => "geoname_id",
-    ISO_CODE_KEY => "iso_code",
-    CONFIDENCE_KEY => "confidence",
-    ACCURACY_RADIUS_KEY => "accuracy_radius",
-    LATITUDE_KEY => "latitude",
-    LONGITUDE_KEY => "longitude",
-    TIME_ZONE_KEY => "time_zone",
-    METRO_CODE_KEY => "metro_code",
-    POPULATION_DENSITY_KEY => "population_density",
-    EN_KEY => "en",
-    ES_KEY => "es",
-    FR_KEY => "fr",
-    JA_KEY => "ja",
-    PT_BR_KEY => "pt-BR",
-    RU_KEY => "ru",
-    ZH_CN_KEY => "zh-CN",
-    // Common keys
-    CODE_KEY => "code",
-    NETWORK_KEY => "network",
-    IS_ANONYMOUS_PROXY_KEY => "is_anonymous_proxy",
-    IS_SATELLITE_PROVIDER_KEY => "is_satellite_provider",
-    // Continent codes
-    AF_KEY => "AF",
-    AN_KEY => "AN",
-    AS_KEY => "AS",
-    EU_KEY => "EU",
-    NA_KEY => "NA",
-    OC_KEY => "OC",
-    SA_KEY => "SA",
-    // Major Country ISO codes
-    US_VAL => "US",
-    CN_VAL => "CN",
-    JP_VAL => "JP",
-    DE_VAL => "DE",
-    IN_VAL => "IN",
-    GB_VAL => "GB",
-    FR_VAL => "FR",
-    BR_VAL => "BR",
-    IT_VAL => "IT",
-    CA_VAL => "CA",
-    RU_VAL => "RU", // Already defined above as RU_KEY? No, RU_KEY is "ru" (lang), this is "RU" (country)
-    KR_VAL => "KR",
-    AU_VAL => "AU",
-    ES_VAL => "ES", // "ES" (country) vs "es" (lang). ES_KEY is "es".
-    MX_VAL => "MX",
-    ID_VAL => "ID",
-    TR_VAL => "TR",
-);
+const MAP_KEY_CACHE_MAX: usize = 256;
+const MAP_KEY_ROOTS_CONST: &str = "__MAP_KEY_ROOTS__";
+
+struct MapKeyCache {
+    key_to_index: FxHashMap<String, usize>,
+}
+
+impl MapKeyCache {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            key_to_index: FxHashMap::default(),
+        }
+    }
+}
+
+#[inline]
+fn map_key_roots_array(ruby: &magnus::Ruby) -> RArray {
+    let rust = rust_module(ruby);
+    let roots = rust
+        .const_get::<_, Value>(MAP_KEY_ROOTS_CONST)
+        .expect("map key roots constant should exist");
+    RArray::from_value(roots).expect("map key roots constant should be an array")
+}
+
+#[inline]
+fn cached_map_key(ruby: &magnus::Ruby, key: &str) -> Value {
+    MAP_KEY_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let roots = map_key_roots_array(ruby);
+        if let Some(index) = cache.key_to_index.get(key) {
+            return roots
+                .entry::<Value>(*index as isize)
+                .expect("cached map key index should be valid");
+        }
+
+        let interned = ruby.str_new(key).to_interned_str();
+        let value = interned.as_value();
+        if cache.key_to_index.len() < MAP_KEY_CACHE_MAX {
+            let index = roots.len();
+            roots
+                .push(value)
+                .expect("map key roots array push should succeed");
+            cache.key_to_index.insert(key.to_owned(), index);
+        }
+        value
+    })
+}
 
 /// Wrapper that owns the Ruby value produced by deserializing a MaxMind record
 #[derive(Clone)]
@@ -331,18 +214,18 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         E: de::Error,
     {
-        let val = interned_key(self.ruby, value)
-            .unwrap_or_else(|| self.ruby.str_new(value).into_value_with(self.ruby));
-        Ok(RubyDecodedValue::new(val))
+        Ok(RubyDecodedValue::new(
+            self.ruby.str_new(value).into_value_with(self.ruby),
+        ))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let val = interned_key(self.ruby, &value)
-            .unwrap_or_else(|| self.ruby.str_new(&value).into_value_with(self.ruby));
-        Ok(RubyDecodedValue::new(val))
+        Ok(RubyDecodedValue::new(
+            self.ruby.str_new(&value).into_value_with(self.ruby),
+        ))
     }
 
     fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
@@ -386,10 +269,9 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             Some(cap) => self.ruby.hash_new_capa(cap),
             None => self.ruby.hash_new(),
         };
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+        while let Some(key) = map.next_key::<&'de str>()? {
+            let key_val = cached_map_key(self.ruby, key);
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
-            let key_val = interned_key(self.ruby, key.as_ref())
-                .unwrap_or_else(|| self.ruby.str_new(key.as_ref()).into_value_with(self.ruby));
             hash.aset(key_val, value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
@@ -420,35 +302,10 @@ impl ReaderSource {
         &self,
         ip: IpAddr,
     ) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
-        let (result, prefix_len) = match self {
-            ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip)?;
-                let network = result.network()?;
-                let prefix = network.prefix();
-
-                let prefix_len = if ip.is_ipv4() && network.is_ipv6() {
-                    0
-                } else {
-                    prefix as usize
-                };
-
-                (result.decode()?, prefix_len)
-            }
-            ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip)?;
-                let network = result.network()?;
-                let prefix = network.prefix();
-
-                let prefix_len = if ip.is_ipv4() && network.is_ipv6() {
-                    0
-                } else {
-                    prefix as usize
-                };
-
-                (result.decode()?, prefix_len)
-            }
-        };
-        Ok((result, prefix_len))
+        match self {
+            ReaderSource::Mmap(reader) => lookup_prefix_for_reader(reader, ip),
+            ReaderSource::Memory(reader) => lookup_prefix_for_reader(reader, ip),
+        }
     }
 
     #[inline]
@@ -490,40 +347,54 @@ enum ReaderWithin {
 impl ReaderWithin {
     fn next(&mut self) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
         match self {
-            ReaderWithin::Mmap(iter) => loop {
-                match iter.next() {
-                    None => return None,
-                    Some(Err(e)) => return Some(Err(e)),
-                    Some(Ok(lookup_result)) => {
-                        let network = match lookup_result.network() {
-                            Ok(n) => n,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        match lookup_result.decode::<RubyDecodedValue>() {
-                            Ok(Some(data)) => return Some(Ok((network, data))),
-                            Ok(None) => continue, // Skip networks without data
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
+            ReaderWithin::Mmap(iter) => next_within_result(iter),
+            ReaderWithin::Memory(iter) => next_within_result(iter),
+        }
+    }
+}
+
+#[inline]
+fn lookup_prefix_for_reader<S: AsRef<[u8]>>(
+    reader: &MaxMindReader<S>,
+    ip: IpAddr,
+) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
+    let result = reader.lookup(ip)?;
+    let network = result.network()?;
+    let prefix_len = prefix_len_for_ip_network(ip, network);
+    Ok((result.decode()?, prefix_len))
+}
+
+#[inline]
+// prefix_len_for_ip_network uses 0 as a sentinel for ip.is_ipv4() && network.is_ipv6().
+// In this case, 0 is not a real prefix length; it signals an IPv4-in-IPv6 mapping path,
+// and callers must treat it specially (distinct from "no network found").
+fn prefix_len_for_ip_network(ip: IpAddr, network: IpNetwork) -> usize {
+    if ip.is_ipv4() && network.is_ipv6() {
+        0
+    } else {
+        network.prefix() as usize
+    }
+}
+
+#[inline]
+fn next_within_result<S: AsRef<[u8]>>(
+    iter: &mut Within<'static, S>,
+) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
+    loop {
+        match iter.next() {
+            None => return None,
+            Some(Err(e)) => return Some(Err(e)),
+            Some(Ok(lookup_result)) => {
+                let network = match lookup_result.network() {
+                    Ok(n) => n,
+                    Err(e) => return Some(Err(e)),
+                };
+                match lookup_result.decode::<RubyDecodedValue>() {
+                    Ok(Some(data)) => return Some(Ok((network, data))),
+                    Ok(None) => continue, // Skip networks without data
+                    Err(e) => return Some(Err(e)),
                 }
-            },
-            ReaderWithin::Memory(iter) => loop {
-                match iter.next() {
-                    None => return None,
-                    Some(Err(e)) => return Some(Err(e)),
-                    Some(Ok(lookup_result)) => {
-                        let network = match lookup_result.network() {
-                            Ok(n) => n,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        match lookup_result.decode::<RubyDecodedValue>() {
-                            Ok(Some(data)) => return Some(Ok((network, data))),
-                            Ok(None) => continue, // Skip networks without data
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
-                }
-            },
+            }
         }
     }
 }
@@ -935,6 +806,32 @@ fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Er
     }
 
     // Slow path: Try as IPAddr object
+    if let Ok(ipaddr_class) = ruby.class_object().const_get::<_, RClass>("IPAddr") {
+        if value.is_kind_of(ipaddr_class) {
+            let packed: Value = value.funcall("hton", ())?;
+            if let Some(packed_str) = RString::from_value(packed) {
+                // SAFETY: `bytes` is used immediately and `packed`/`packed_str` stay alive and
+                // unmodified through the end of this match. This block must not introduce calls
+                // that could move, collect, or mutate the Ruby string between `as_slice()` and
+                // the final byte-pattern match handling.
+                let bytes = unsafe { packed_str.as_slice() };
+                return match bytes {
+                    [a, b, c, d] => Ok(IpAddr::from([*a, *b, *c, *d])),
+                    [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15] => {
+                        Ok(IpAddr::from([
+                            *a0, *a1, *a2, *a3, *a4, *a5, *a6, *a7, *a8, *a9, *a10, *a11, *a12,
+                            *a13, *a14, *a15,
+                        ]))
+                    }
+                    _ => Err(Error::new(
+                        ruby.exception_arg_error(),
+                        format!("'{}' does not appear to be an IPv4 or IPv6 address", value),
+                    )),
+                };
+            }
+        }
+    }
+
     if let Ok(ipaddr_obj) = value.funcall::<_, _, String>("to_s", ()) {
         return IpAddr::from_str(&ipaddr_obj).map_err(|_| {
             Error::new(
@@ -964,24 +861,7 @@ fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
 fn open_database_mmap(path: &str) -> Result<Reader, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-
-    let file = File::open(Path::new(path)).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            let errno = ruby
-                .class_object()
-                .const_get::<_, RModule>("Errno")
-                .expect("Errno module should exist");
-            let enoent = errno
-                .const_get::<_, RClass>("ENOENT")
-                .expect("Errno::ENOENT should exist");
-            Error::new(
-                ExceptionClass::from_value(enoent.as_value())
-                    .expect("ENOENT should convert to ExceptionClass"),
-                e.to_string(),
-            )
-        }
-        _ => Error::new(ruby.exception_io_error(), e.to_string()),
-    })?;
+    let file = open_database_file(path, &ruby)?;
 
     let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
         Error::new(
@@ -1007,24 +887,7 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
 fn open_database_memory(path: &str) -> Result<Reader, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-
-    let mut file = File::open(Path::new(path)).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            let errno = ruby
-                .class_object()
-                .const_get::<_, RModule>("Errno")
-                .expect("Errno module should exist");
-            let enoent = errno
-                .const_get::<_, RClass>("ENOENT")
-                .expect("Errno::ENOENT should exist");
-            Error::new(
-                ExceptionClass::from_value(enoent.as_value())
-                    .expect("ENOENT should convert to ExceptionClass"),
-                e.to_string(),
-            )
-        }
-        _ => Error::new(ruby.exception_io_error(), e.to_string()),
-    })?;
+    let mut file = open_database_file(path, &ruby)?;
 
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).map_err(|e| {
@@ -1048,21 +911,51 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
     Ok(create_reader(ReaderSource::Memory(reader)))
 }
 
+fn open_database_file(path: &str, ruby: &magnus::Ruby) -> Result<File, Error> {
+    File::open(Path::new(path)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            open_not_found_error(ruby, e)
+        } else {
+            Error::new(ruby.exception_io_error(), e.to_string())
+        }
+    })
+}
+
+fn open_not_found_error(ruby: &magnus::Ruby, err: std::io::Error) -> Error {
+    let errno = ruby
+        .class_object()
+        .const_get::<_, RModule>("Errno")
+        .expect("Errno module should exist");
+    let enoent = errno
+        .const_get::<_, RClass>("ENOENT")
+        .expect("Errno::ENOENT should exist");
+    Error::new(
+        ExceptionClass::from_value(enoent.as_value())
+            .expect("ENOENT should convert to ExceptionClass"),
+        err.to_string(),
+    )
+}
+
 /// Get the InvalidDatabaseError class
 fn invalid_database_error() -> RClass {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
+    let rust = rust_module(&ruby);
+    rust.const_get::<_, RClass>("InvalidDatabaseError")
+        .expect("InvalidDatabaseError class should exist")
+}
+
+fn rust_module(ruby: &magnus::Ruby) -> RModule {
     let maxmind = ruby
         .class_object()
         .const_get::<_, RModule>("MaxMind")
         .expect("MaxMind module should exist");
     let db = maxmind
-        .const_get::<_, RModule>("DB")
-        .expect("MaxMind::DB module should exist");
-    let rust = db
-        .const_get::<_, RModule>("Rust")
-        .expect("MaxMind::DB::Rust module should exist");
-    rust.const_get::<_, RClass>("InvalidDatabaseError")
-        .expect("InvalidDatabaseError class should exist")
+        .const_get::<_, Value>("DB")
+        .expect("MaxMind::DB constant should exist");
+    let rust_value = db
+        .funcall::<_, _, Value>("const_get", ("Rust",))
+        .expect("MaxMind::DB::Rust constant should exist");
+    RModule::from_value(rust_value).expect("MaxMind::DB::Rust should be a module")
 }
 
 #[magnus::init]
@@ -1076,11 +969,26 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     let rust = match db_value {
         Ok(existing) if existing.is_kind_of(ruby.class_class()) => {
             // MaxMind::DB exists as a Class (official gem loaded first)
-            // Define Rust module directly as a constant on the class using funcall
-            let rust_mod = ruby.define_module("MaxMindDBRustTemp")?;
-            // Use const_set via funcall on the existing class/module
-            let _ = existing.funcall::<_, _, Value>("const_set", ("Rust", rust_mod))?;
-            rust_mod
+            // Reuse existing Rust constant if present to avoid replacing classes.
+            if let Ok(rust_value) = existing.funcall::<_, _, Value>("const_get", ("Rust", false)) {
+                RModule::from_value(rust_value).ok_or_else(|| {
+                    Error::new(
+                        ruby.exception_type_error(),
+                        "MaxMind::DB::Rust exists but is not a module",
+                    )
+                })?
+            } else {
+                // Define Rust module directly as a constant on the class.
+                let rust_value: Value = ruby.module_new().as_value();
+                let rust_mod = RModule::from_value(rust_value).ok_or_else(|| {
+                    Error::new(
+                        ruby.exception_type_error(),
+                        "Failed to create anonymous module for MaxMind::DB::Rust",
+                    )
+                })?;
+                let _ = existing.funcall::<_, _, Value>("const_set", ("Rust", rust_mod))?;
+                rust_mod
+            }
         }
         Ok(existing) => {
             // MaxMind::DB exists as a Module (our gem loaded first)
@@ -1096,6 +1004,15 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
         }
     };
 
+    if rust.const_get::<_, Value>(MAP_KEY_ROOTS_CONST).is_err() {
+        rust.const_set(MAP_KEY_ROOTS_CONST, ruby.ary_new_capa(MAP_KEY_CACHE_MAX))?;
+    }
+
+    // The extension can be loaded more than once from different paths.
+    // Reusing previously defined classes avoids typed-data incompatibilities.
+    if rust.const_get::<_, Value>("Reader").is_ok() {
+        return Ok(());
+    }
     // Define InvalidDatabaseError
     let runtime_error = ruby.exception_runtime_error();
     rust.define_error("InvalidDatabaseError", runtime_error)?;
