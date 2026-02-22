@@ -36,8 +36,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-ruby-${{ matrix.ruby }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
       - name: Compile extension
         run: bundle exec rake compile
