@@ -5,15 +5,15 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, value::Lazy,
-    ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
+    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, ExceptionClass,
+    IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
-    borrow::Cow,
-    collections::BTreeMap,
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
     fmt,
     fs::File,
     io::Read as IoRead,
@@ -31,176 +31,58 @@ const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 const ERR_BAD_DATA: &str =
     "The MaxMind DB file's data section contains bad data (unknown data type or corrupt data)";
 
-macro_rules! define_interned_keys {
-    ( $( $const_ident:ident => $str:expr ),* $(,)? ) => {
-        $(
-            static $const_ident: Lazy<RString> = Lazy::new(|ruby| {
-                let s = ruby.str_new($str);
-                s.freeze();
-                s
-            });
-        )*
-
-        fn interned_key(ruby: &magnus::Ruby, key: &str) -> Option<Value> {
-            match key.len() {
-                2 => match key.as_bytes() {
-                    b"en" => Some(ruby.get_inner(&$crate::EN_KEY).as_value()),
-                    b"es" => Some(ruby.get_inner(&$crate::ES_KEY).as_value()),
-                    b"fr" => Some(ruby.get_inner(&$crate::FR_KEY).as_value()),
-                    b"ja" => Some(ruby.get_inner(&$crate::JA_KEY).as_value()),
-                    b"ru" => Some(ruby.get_inner(&$crate::RU_KEY).as_value()),
-                    b"AF" => Some(ruby.get_inner(&$crate::AF_KEY).as_value()),
-                    b"AN" => Some(ruby.get_inner(&$crate::AN_KEY).as_value()),
-                    b"AS" => Some(ruby.get_inner(&$crate::AS_KEY).as_value()),
-                    b"EU" => Some(ruby.get_inner(&$crate::EU_KEY).as_value()),
-                    b"NA" => Some(ruby.get_inner(&$crate::NA_KEY).as_value()),
-                    b"OC" => Some(ruby.get_inner(&$crate::OC_KEY).as_value()),
-                    b"SA" => Some(ruby.get_inner(&$crate::SA_KEY).as_value()),
-                    b"US" => Some(ruby.get_inner(&$crate::US_VAL).as_value()),
-                    b"CN" => Some(ruby.get_inner(&$crate::CN_VAL).as_value()),
-                    b"JP" => Some(ruby.get_inner(&$crate::JP_VAL).as_value()),
-                    b"DE" => Some(ruby.get_inner(&$crate::DE_VAL).as_value()),
-                    b"IN" => Some(ruby.get_inner(&$crate::IN_VAL).as_value()),
-                    b"GB" => Some(ruby.get_inner(&$crate::GB_VAL).as_value()),
-                    b"FR" => Some(ruby.get_inner(&$crate::FR_VAL).as_value()),
-                    b"BR" => Some(ruby.get_inner(&$crate::BR_VAL).as_value()),
-                    b"IT" => Some(ruby.get_inner(&$crate::IT_VAL).as_value()),
-                    b"CA" => Some(ruby.get_inner(&$crate::CA_VAL).as_value()),
-                    b"RU" => Some(ruby.get_inner(&$crate::RU_VAL).as_value()),
-                    b"KR" => Some(ruby.get_inner(&$crate::KR_VAL).as_value()),
-                    b"AU" => Some(ruby.get_inner(&$crate::AU_VAL).as_value()),
-                    b"ES" => Some(ruby.get_inner(&$crate::ES_VAL).as_value()),
-                    b"MX" => Some(ruby.get_inner(&$crate::MX_VAL).as_value()),
-                    b"ID" => Some(ruby.get_inner(&$crate::ID_VAL).as_value()),
-                    b"TR" => Some(ruby.get_inner(&$crate::TR_VAL).as_value()),
-                    _ => None,
-                },
-                4 => match key.as_bytes() {
-                    b"city" => Some(ruby.get_inner(&$crate::CITY_KEY).as_value()),
-                    b"code" => Some(ruby.get_inner(&$crate::CODE_KEY).as_value()),
-                    _ => None,
-                },
-                5 => match key.as_bytes() {
-                    b"names" => Some(ruby.get_inner(&$crate::NAMES_KEY).as_value()),
-                    b"pt-BR" => Some(ruby.get_inner(&$crate::PT_BR_KEY).as_value()),
-                    b"zh-CN" => Some(ruby.get_inner(&$crate::ZH_CN_KEY).as_value()),
-                    _ => None,
-                },
-                6 => match key.as_bytes() {
-                    b"postal" => Some(ruby.get_inner(&$crate::POSTAL_KEY).as_value()),
-                    b"traits" => Some(ruby.get_inner(&$crate::TRAITS_KEY).as_value()),
-                    _ => None,
-                },
-                7 => match key.as_bytes() {
-                    b"country" => Some(ruby.get_inner(&$crate::COUNTRY_KEY).as_value()),
-                    b"network" => Some(ruby.get_inner(&$crate::NETWORK_KEY).as_value()),
-                    _ => None,
-                },
-                8 => match key.as_bytes() {
-                    b"location" => Some(ruby.get_inner(&$crate::LOCATION_KEY).as_value()),
-                    b"iso_code" => Some(ruby.get_inner(&$crate::ISO_CODE_KEY).as_value()),
-                    b"latitude" => Some(ruby.get_inner(&$crate::LATITUDE_KEY).as_value()),
-                    _ => None,
-                },
-                9 => match key.as_bytes() {
-                    b"continent" => Some(ruby.get_inner(&$crate::CONTINENT_KEY).as_value()),
-                    b"longitude" => Some(ruby.get_inner(&$crate::LONGITUDE_KEY).as_value()),
-                    b"time_zone" => Some(ruby.get_inner(&$crate::TIME_ZONE_KEY).as_value()),
-                    _ => None,
-                },
-                10 => match key.as_bytes() {
-                    b"geoname_id" => Some(ruby.get_inner(&$crate::GEONAME_ID_KEY).as_value()),
-                    b"metro_code" => Some(ruby.get_inner(&$crate::METRO_CODE_KEY).as_value()),
-                    b"confidence" => Some(ruby.get_inner(&$crate::CONFIDENCE_KEY).as_value()),
-                    _ => None,
-                },
-                12 => match key.as_bytes() {
-                    b"subdivisions" => Some(ruby.get_inner(&$crate::SUBDIVISIONS_KEY).as_value()),
-                    _ => None,
-                },
-                15 => match key.as_bytes() {
-                    b"accuracy_radius" => Some(ruby.get_inner(&$crate::ACCURACY_RADIUS_KEY).as_value()),
-                    _ => None,
-                },
-                18 => match key.as_bytes() {
-                    b"registered_country" => Some(ruby.get_inner(&$crate::REGISTERED_COUNTRY_KEY).as_value()),
-                    b"population_density" => Some(ruby.get_inner(&$crate::POPULATION_DENSITY_KEY).as_value()),
-                    _ => None,
-                },
-                19 => match key.as_bytes() {
-                    b"represented_country" => Some(ruby.get_inner(&$crate::REPRESENTED_COUNTRY_KEY).as_value()),
-                    b"is_anonymous_proxy" => Some(ruby.get_inner(&$crate::IS_ANONYMOUS_PROXY_KEY).as_value()),
-                    _ => None,
-                },
-                21 => match key.as_bytes() {
-                    b"is_satellite_provider" => Some(ruby.get_inner(&$crate::IS_SATELLITE_PROVIDER_KEY).as_value()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        }
-    };
+thread_local! {
+    static MAP_KEY_CACHE: RefCell<MapKeyCache> = RefCell::new(MapKeyCache::new());
 }
 
-define_interned_keys!(
-    CITY_KEY => "city",
-    CONTINENT_KEY => "continent",
-    COUNTRY_KEY => "country",
-    REGISTERED_COUNTRY_KEY => "registered_country",
-    REPRESENTED_COUNTRY_KEY => "represented_country",
-    SUBDIVISIONS_KEY => "subdivisions",
-    LOCATION_KEY => "location",
-    POSTAL_KEY => "postal",
-    TRAITS_KEY => "traits",
-    NAMES_KEY => "names",
-    GEONAME_ID_KEY => "geoname_id",
-    ISO_CODE_KEY => "iso_code",
-    CONFIDENCE_KEY => "confidence",
-    ACCURACY_RADIUS_KEY => "accuracy_radius",
-    LATITUDE_KEY => "latitude",
-    LONGITUDE_KEY => "longitude",
-    TIME_ZONE_KEY => "time_zone",
-    METRO_CODE_KEY => "metro_code",
-    POPULATION_DENSITY_KEY => "population_density",
-    EN_KEY => "en",
-    ES_KEY => "es",
-    FR_KEY => "fr",
-    JA_KEY => "ja",
-    PT_BR_KEY => "pt-BR",
-    RU_KEY => "ru",
-    ZH_CN_KEY => "zh-CN",
-    // Common keys
-    CODE_KEY => "code",
-    NETWORK_KEY => "network",
-    IS_ANONYMOUS_PROXY_KEY => "is_anonymous_proxy",
-    IS_SATELLITE_PROVIDER_KEY => "is_satellite_provider",
-    // Continent codes
-    AF_KEY => "AF",
-    AN_KEY => "AN",
-    AS_KEY => "AS",
-    EU_KEY => "EU",
-    NA_KEY => "NA",
-    OC_KEY => "OC",
-    SA_KEY => "SA",
-    // Major Country ISO codes
-    US_VAL => "US",
-    CN_VAL => "CN",
-    JP_VAL => "JP",
-    DE_VAL => "DE",
-    IN_VAL => "IN",
-    GB_VAL => "GB",
-    FR_VAL => "FR",
-    BR_VAL => "BR",
-    IT_VAL => "IT",
-    CA_VAL => "CA",
-    RU_VAL => "RU", // Already defined above as RU_KEY? No, RU_KEY is "ru" (lang), this is "RU" (country)
-    KR_VAL => "KR",
-    AU_VAL => "AU",
-    ES_VAL => "ES", // "ES" (country) vs "es" (lang). ES_KEY is "es".
-    MX_VAL => "MX",
-    ID_VAL => "ID",
-    TR_VAL => "TR",
-);
+const MAP_KEY_CACHE_MAX: usize = 256;
+const MAP_KEY_ROOTS_CONST: &str = "__MAP_KEY_ROOTS__";
+
+struct MapKeyCache {
+    key_to_index: HashMap<String, usize>,
+}
+
+impl MapKeyCache {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            key_to_index: HashMap::new(),
+        }
+    }
+}
+
+#[inline]
+fn map_key_roots_array(ruby: &magnus::Ruby) -> RArray {
+    let rust = rust_module(ruby);
+    let roots = rust
+        .const_get::<_, Value>(MAP_KEY_ROOTS_CONST)
+        .expect("map key roots constant should exist");
+    RArray::from_value(roots).expect("map key roots constant should be an array")
+}
+
+#[inline]
+fn cached_map_key(ruby: &magnus::Ruby, key: &str) -> Value {
+    MAP_KEY_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let roots = map_key_roots_array(ruby);
+        if let Some(index) = cache.key_to_index.get(key) {
+            return roots
+                .entry::<Value>(*index as isize)
+                .expect("cached map key index should be valid");
+        }
+
+        let interned = ruby.str_new(key).to_interned_str();
+        let value = interned.as_value();
+        if cache.key_to_index.len() < MAP_KEY_CACHE_MAX {
+            let index = roots.len();
+            roots
+                .push(value)
+                .expect("map key roots array push should succeed");
+            cache.key_to_index.insert(key.to_owned(), index);
+        }
+        value
+    })
+}
 
 /// Wrapper that owns the Ruby value produced by deserializing a MaxMind record
 #[derive(Clone)]
@@ -331,18 +213,18 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         E: de::Error,
     {
-        let val = interned_key(self.ruby, value)
-            .unwrap_or_else(|| self.ruby.str_new(value).into_value_with(self.ruby));
-        Ok(RubyDecodedValue::new(val))
+        Ok(RubyDecodedValue::new(
+            self.ruby.str_new(value).into_value_with(self.ruby),
+        ))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let val = interned_key(self.ruby, &value)
-            .unwrap_or_else(|| self.ruby.str_new(&value).into_value_with(self.ruby));
-        Ok(RubyDecodedValue::new(val))
+        Ok(RubyDecodedValue::new(
+            self.ruby.str_new(&value).into_value_with(self.ruby),
+        ))
     }
 
     fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
@@ -386,10 +268,9 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             Some(cap) => self.ruby.hash_new_capa(cap),
             None => self.ruby.hash_new(),
         };
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+        while let Some(key) = map.next_key::<&'de str>()? {
+            let key_val = cached_map_key(self.ruby, key);
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
-            let key_val = interned_key(self.ruby, key.as_ref())
-                .unwrap_or_else(|| self.ruby.str_new(key.as_ref()).into_value_with(self.ruby));
             hash.aset(key_val, value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
