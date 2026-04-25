@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Restored lookup performance with a generic bounded cache of frozen Ruby strings reused across decoded keys and scalar values.
+- Removed hardcoded interned string tables in favor of the generic string cache.
+- Simplified decoding so lookups and iteration use the same `maxminddb` decode path again.
 - Upgraded `maxminddb` crate to 0.28.0, which includes several performance
   improvements.
 
