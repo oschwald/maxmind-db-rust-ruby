@@ -14,7 +14,7 @@ use rustc_hash::FxHasher;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
     borrow::Cow,
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     collections::BTreeMap,
     fmt,
     fs::File,
@@ -61,25 +61,34 @@ impl StringCache {
 
 thread_local! {
     static STRING_CACHE: RefCell<StringCache> = RefCell::new(StringCache::new());
-    static STRING_CACHE_ROOTS: RefCell<Option<Value>> = const { RefCell::new(None) };
+    static STRING_CACHE_ROOTS: OnceCell<RArray> = const { OnceCell::new() };
+}
+
+#[inline]
+fn string_cache_roots_owner(ruby: &magnus::Ruby) -> RArray {
+    let value = rust_module(ruby)
+        .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
+        .expect("string cache roots constant should exist");
+    RArray::from_value(value).expect("string cache roots constant should be an array")
+}
+
+#[inline]
+fn init_thread_string_cache_roots(ruby: &magnus::Ruby) -> RArray {
+    let roots = ruby.ary_new_capa(STRING_CACHE_MAX);
+    for _ in 0..STRING_CACHE_MAX {
+        roots
+            .push(ruby.qnil().as_value())
+            .expect("string cache roots initialization should succeed");
+    }
+    string_cache_roots_owner(ruby)
+        .push(roots.as_value())
+        .expect("string cache roots owner should retain per-thread roots");
+    roots
 }
 
 #[inline]
 fn string_cache_roots(ruby: &magnus::Ruby) -> RArray {
-    STRING_CACHE_ROOTS.with(|roots_cell| {
-        let mut roots = roots_cell.borrow_mut();
-        let value = match *roots {
-            Some(value) => value,
-            None => {
-                let value = rust_module(ruby)
-                    .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
-                    .expect("string cache roots constant should exist");
-                *roots = Some(value);
-                value
-            }
-        };
-        RArray::from_value(value).expect("string cache roots constant should be an array")
-    })
+    STRING_CACHE_ROOTS.with(|roots| *roots.get_or_init(|| init_thread_string_cache_roots(ruby)))
 }
 
 #[inline]
