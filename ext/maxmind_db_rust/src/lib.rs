@@ -13,7 +13,6 @@ use memmap2::Mmap;
 use rustc_hash::FxHasher;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
-    borrow::Cow,
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
     fmt,
@@ -304,9 +303,9 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             Some(cap) => self.ruby.hash_new_capa(cap),
             None => self.ruby.hash_new(),
         };
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+        while let Some(key) = map.next_key::<&'de str>()? {
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
-            let key_val = cached_string(self.ruby, key.as_ref());
+            let key_val = cached_string(self.ruby, key);
             hash.aset(key_val, value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }

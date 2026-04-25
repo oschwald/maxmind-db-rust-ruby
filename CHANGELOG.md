@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed hardcoded interned string tables in favor of the generic string cache.
 - Simplified decoding so lookups and iteration use the same `maxminddb` decode path again.
 - Reduced repeated cache-root lookup overhead with a thread-local `OnceCell` for the Ruby-owned string cache roots.
+- Borrowed decoded map keys directly during deserialization to avoid `Cow` overhead in the hot decode path.
 - Upgraded `maxminddb` crate to 0.28.0, which includes several performance
   improvements.
 
