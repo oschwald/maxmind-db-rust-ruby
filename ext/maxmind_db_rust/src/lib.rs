@@ -10,13 +10,14 @@ use magnus::{
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     collections::BTreeMap,
     fmt,
     fs::File,
+    hash::{Hash, Hasher},
     io::Read as IoRead,
     net::IpAddr,
     path::Path,
@@ -31,57 +32,94 @@ use std::{
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 const ERR_BAD_DATA: &str =
     "The MaxMind DB file's data section contains bad data (unknown data type or corrupt data)";
-
-thread_local! {
-    static MAP_KEY_CACHE: RefCell<MapKeyCache> = RefCell::new(MapKeyCache::new());
-}
-
-const MAP_KEY_CACHE_MAX: usize = 256;
+const STRING_CACHE_ROOTS_CONST: &str = "__STRING_CACHE_ROOTS__";
 const MAP_KEY_ROOTS_CONST: &str = "__MAP_KEY_ROOTS__";
+const STRING_CACHE_MAX: usize = 4096;
+const STRING_CACHE_MIN_LEN: usize = 2;
+const STRING_CACHE_MAX_LEN: usize = 64;
 
-struct MapKeyCache {
-    key_to_index: FxHashMap<String, usize>,
+#[derive(Default)]
+struct StringCacheEntry {
+    hash: u64,
+    value: String,
 }
 
-impl MapKeyCache {
-    #[inline]
+struct StringCache {
+    entries: Box<[StringCacheEntry]>,
+}
+
+impl StringCache {
     fn new() -> Self {
-        Self {
-            key_to_index: FxHashMap::default(),
-        }
+        let entries = (0..STRING_CACHE_MAX)
+            .map(|_| StringCacheEntry::default())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { entries }
     }
 }
 
-#[inline]
-fn map_key_roots_array(ruby: &magnus::Ruby) -> RArray {
-    let rust = rust_module(ruby);
-    let roots = rust
-        .const_get::<_, Value>(MAP_KEY_ROOTS_CONST)
-        .expect("map key roots constant should exist");
-    RArray::from_value(roots).expect("map key roots constant should be an array")
+thread_local! {
+    static STRING_CACHE: RefCell<StringCache> = RefCell::new(StringCache::new());
+    static STRING_CACHE_ROOTS: OnceCell<RArray> = const { OnceCell::new() };
 }
 
 #[inline]
-fn cached_map_key(ruby: &magnus::Ruby, key: &str) -> Value {
-    MAP_KEY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let roots = map_key_roots_array(ruby);
-        if let Some(index) = cache.key_to_index.get(key) {
-            return roots
-                .entry::<Value>(*index as isize)
-                .expect("cached map key index should be valid");
+fn string_cache_roots_owner(ruby: &magnus::Ruby) -> RArray {
+    let value = rust_module(ruby)
+        .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
+        .expect("string cache roots constant should exist");
+    RArray::from_value(value).expect("string cache roots constant should be an array")
+}
+
+#[inline]
+fn init_thread_string_cache_roots(ruby: &magnus::Ruby) -> RArray {
+    let roots = ruby.ary_new_capa(STRING_CACHE_MAX);
+    for _ in 0..STRING_CACHE_MAX {
+        roots
+            .push(ruby.qnil().as_value())
+            .expect("string cache roots initialization should succeed");
+    }
+    string_cache_roots_owner(ruby)
+        .push(roots.as_value())
+        .expect("string cache roots owner should retain per-thread roots");
+    roots
+}
+
+#[inline]
+fn string_cache_roots(ruby: &magnus::Ruby) -> RArray {
+    STRING_CACHE_ROOTS.with(|roots| *roots.get_or_init(|| init_thread_string_cache_roots(ruby)))
+}
+
+#[inline]
+fn cached_string(ruby: &magnus::Ruby, value: &str) -> Value {
+    if !(STRING_CACHE_MIN_LEN..=STRING_CACHE_MAX_LEN).contains(&value.len()) {
+        return ruby.str_new(value).into_value_with(ruby);
+    }
+
+    let mut hasher = FxHasher::default();
+    value.hash(&mut hasher);
+    let hash = hasher.finish();
+    let slot = (hash as usize) & (STRING_CACHE_MAX - 1);
+
+    STRING_CACHE.with(|cache_cell| {
+        let mut cache = cache_cell.borrow_mut();
+        let entry = &mut cache.entries[slot];
+        if entry.hash == hash && entry.value == value {
+            return string_cache_roots(ruby)
+                .entry::<Value>(slot as isize)
+                .expect("string cache roots lookup should succeed");
         }
 
-        let interned = ruby.str_new(key).to_interned_str();
-        let value = interned.as_value();
-        if cache.key_to_index.len() < MAP_KEY_CACHE_MAX {
-            let index = roots.len();
-            roots
-                .push(value)
-                .expect("map key roots array push should succeed");
-            cache.key_to_index.insert(key.to_owned(), index);
-        }
-        value
+        let string = ruby.str_new(value);
+        string.freeze();
+        let cached = string.as_value();
+        string_cache_roots(ruby)
+            .store(slot as isize, cached)
+            .expect("string cache roots update should succeed");
+        entry.hash = hash;
+        entry.value.clear();
+        entry.value.push_str(value);
+        cached
     })
 }
 
@@ -214,18 +252,14 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(
-            self.ruby.str_new(value).into_value_with(self.ruby),
-        ))
+        Ok(RubyDecodedValue::new(cached_string(self.ruby, value)))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(
-            self.ruby.str_new(&value).into_value_with(self.ruby),
-        ))
+        Ok(RubyDecodedValue::new(cached_string(self.ruby, &value)))
     }
 
     fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
@@ -270,8 +304,8 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             None => self.ruby.hash_new(),
         };
         while let Some(key) = map.next_key::<&'de str>()? {
-            let key_val = cached_map_key(self.ruby, key);
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
+            let key_val = cached_string(self.ruby, key);
             hash.aset(key_val, value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
@@ -302,10 +336,19 @@ impl ReaderSource {
         &self,
         ip: IpAddr,
     ) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
-        match self {
-            ReaderSource::Mmap(reader) => lookup_prefix_for_reader(reader, ip),
-            ReaderSource::Memory(reader) => lookup_prefix_for_reader(reader, ip),
-        }
+        let (result, prefix_len) = match self {
+            ReaderSource::Mmap(reader) => {
+                let result = reader.lookup(ip)?;
+                let network = result.network()?;
+                (result.decode()?, prefix_len_for_ip_network(ip, network))
+            }
+            ReaderSource::Memory(reader) => {
+                let result = reader.lookup(ip)?;
+                let network = result.network()?;
+                (result.decode()?, prefix_len_for_ip_network(ip, network))
+            }
+        };
+        Ok((result, prefix_len))
     }
 
     #[inline]
@@ -321,15 +364,12 @@ impl ReaderSource {
         match self {
             ReaderSource::Mmap(reader) => {
                 let iter = reader.within(network, Default::default())?;
-                // SAFETY: the iterator holds a reference into `reader`. We'll store an Arc guard
-                // alongside it so the reader outlives the transmuted iterator.
                 Ok(ReaderWithin::Mmap(unsafe {
                     std::mem::transmute::<Within<'_, Mmap>, Within<'static, Mmap>>(iter)
                 }))
             }
             ReaderSource::Memory(reader) => {
                 let iter = reader.within(network, Default::default())?;
-                // SAFETY: same as above, the Arc guard keeps the reader alive.
                 Ok(ReaderWithin::Memory(unsafe {
                     std::mem::transmute::<Within<'_, Vec<u8>>, Within<'static, Vec<u8>>>(iter)
                 }))
@@ -351,17 +391,6 @@ impl ReaderWithin {
             ReaderWithin::Memory(iter) => next_within_result(iter),
         }
     }
-}
-
-#[inline]
-fn lookup_prefix_for_reader<S: AsRef<[u8]>>(
-    reader: &MaxMindReader<S>,
-    ip: IpAddr,
-) -> Result<(Option<RubyDecodedValue>, usize), maxminddb_crate::MaxMindDbError> {
-    let result = reader.lookup(ip)?;
-    let network = result.network()?;
-    let prefix_len = prefix_len_for_ip_network(ip, network);
-    Ok((result.decode()?, prefix_len))
 }
 
 #[inline]
@@ -725,7 +754,6 @@ impl Reader {
                 format!("Failed to iterate: {}", e),
             )
         })?;
-
         // Get IPAddr class
         let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
 
@@ -869,7 +897,6 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
             format!("Failed to memory-map database file: {}", e),
         )
     })?;
-
     let reader = MaxMindReader::from_source(mmap).map_err(|_| {
         Error::new(
             ExceptionClass::from_value(invalid_database_error().as_value())
@@ -1004,8 +1031,15 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
         }
     };
 
-    if rust.const_get::<_, Value>(MAP_KEY_ROOTS_CONST).is_err() {
-        rust.const_set(MAP_KEY_ROOTS_CONST, ruby.ary_new_capa(MAP_KEY_CACHE_MAX))?;
+    if rust
+        .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
+        .is_err()
+    {
+        rust.const_set(STRING_CACHE_ROOTS_CONST, ruby.ary_new())?;
+    }
+
+    if rust.const_get::<_, Value>(MAP_KEY_ROOTS_CONST).is_ok() {
+        let _ = rust.funcall::<_, _, Value>("send", ("remove_const", MAP_KEY_ROOTS_CONST))?;
     }
 
     // The extension can be loaded more than once from different paths.
