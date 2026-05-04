@@ -105,7 +105,7 @@ jobs:
           ls -lh all-gems/
 
       - name: Configure RubyGems for trusted publishing
-        uses: rubygems/configure-rubygems-credentials@v1.0.0
+        uses: rubygems/configure-rubygems-credentials@v2.0.0
 
       - name: Publish gems to RubyGems.org
         run: |
