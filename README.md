@@ -355,9 +355,8 @@ Metadata attributes:
 Lookup performance depends on hardware, Ruby version, database, and workload.
 
 - In this project’s random-lookup benchmarks, this gem is consistently faster than the official Ruby implementation.
-- On `/var/lib/GeoIP/GeoIP2-City.mmdb` in this environment, random lookup throughput was about `47x` higher than the official gem.
 - `MODE_MMAP` and `MODE_MEMORY` both perform well; which is faster can vary by environment.
-- For reproducible numbers on your own data, run `benchmark/compare_lookups.rb` against your database.
+- For current, reproducible numbers on your own data and Ruby version, run `benchmark/compare_lookups.rb` against your database.
 - Safe for concurrent lookups across threads.
 
 ## Development
