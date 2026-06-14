@@ -213,7 +213,7 @@ class MaxMindReaderTest < Minitest::Test
     end
     # Error message matches the official gem format
     assert_equal(
-      'Error looking up 2001::. You attempted to look up an IPv6 address in an IPv4-only database',
+      'Error looking up 2001::. You attempted to look up an IPv6 address in an IPv4-only database.',
       e.message,
     )
     reader.close

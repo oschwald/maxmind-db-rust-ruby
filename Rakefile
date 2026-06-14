@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 
 require 'bundler/gem_tasks'
+require 'rbconfig'
 require 'rake/testtask'
+
+OWN_TEST_FILES = FileList['test/*_test.rb'].exclude('test/official_parity_test.rb')
 
 # Set up cross-compilation tasks for rb-sys-dock (used by CI)
 # Check for ARGV containing native: tasks or rb-sys-dock environment
@@ -52,7 +55,7 @@ end
 Rake::TestTask.new(:test_own) do |t|
   t.libs << 'test'
   t.libs << 'lib'
-  t.test_files = FileList['test/*_test.rb']
+  t.test_files = OWN_TEST_FILES
   t.description = 'Run our own tests'
 end
 
@@ -64,11 +67,18 @@ Rake::TestTask.new(:test_maxmind) do |t|
   t.description = 'Run MaxMind upstream compatibility tests'
 end
 
+desc 'Run optional parity tests against the official maxmind-db gem'
+task :test_official_parity do
+  Bundler.with_unbundled_env do
+    sh RbConfig.ruby, '-Itest', '-Ilib', 'test/official_parity_test.rb'
+  end
+end
+
 # Run all tests
 Rake::TestTask.new(:test) do |t|
   t.libs << 'test'
   t.libs << 'lib'
-  t.test_files = FileList['test/*_test.rb', 'test/maxmind/test_*.rb']
+  t.test_files = FileList[OWN_TEST_FILES, 'test/maxmind/test_*.rb']
   t.description = 'Run all tests (own + MaxMind upstream)'
 end
 

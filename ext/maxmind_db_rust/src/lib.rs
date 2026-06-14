@@ -1258,7 +1258,7 @@ fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Erro
 /// Generate error message for IPv6 in IPv4-only database
 fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
     format!(
-        "Error looking up {}. You attempted to look up an IPv6 address in an IPv4-only database",
+        "Error looking up {}. You attempted to look up an IPv6 address in an IPv4-only database.",
         ip
     )
 }
