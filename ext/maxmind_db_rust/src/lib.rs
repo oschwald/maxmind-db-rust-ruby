@@ -319,6 +319,28 @@ enum ReaderSource {
     Memory(MaxMindReader<Vec<u8>>),
 }
 
+#[derive(Copy, Clone)]
+enum OpenMode {
+    Mmap,
+    Memory,
+}
+
+impl OpenMode {
+    fn from_symbol(mode: Symbol, ruby: &magnus::Ruby) -> Result<Self, Error> {
+        let mode_name = mode.name()?;
+        match mode_name.as_ref() {
+            // MODE_FILE is the official gem's file-backed mode; use the
+            // existing mmap reader for the same path-backed behavior.
+            "MODE_AUTO" | "MODE_FILE" | "MODE_MMAP" => Ok(Self::Mmap),
+            "MODE_MEMORY" => Ok(Self::Memory),
+            _ => Err(Error::new(
+                ruby.exception_arg_error(),
+                format!("Unsupported mode: {}", mode_name),
+            )),
+        }
+    }
+}
+
 impl ReaderSource {
     #[inline]
     fn lookup(
@@ -518,31 +540,12 @@ impl Reader {
         // Parse mode from options hash
         let mode: Symbol = mode.unwrap_or_else(|| ruby.to_symbol("MODE_AUTO"));
 
-        let mode_str = mode.name()?;
-        let mode_str: &str = &mode_str;
-
-        // Determine actual mode to use. MODE_FILE is the official gem's file
-        // backed mode; use the existing mmap reader for the same path-backed
-        // behavior.
-        let actual_mode = match mode_str {
-            "MODE_AUTO" | "MODE_FILE" | "MODE_MMAP" => "MMAP",
-            "MODE_MEMORY" => "MEMORY",
-            _ => {
-                return Err(Error::new(
-                    ruby.exception_arg_error(),
-                    format!("Unsupported mode: {}", mode_str),
-                ))
-            }
-        };
+        let open_mode = OpenMode::from_symbol(mode, &ruby)?;
 
         // Open database with appropriate mode
-        match actual_mode {
-            "MMAP" => open_database_mmap(&database),
-            "MEMORY" => open_database_memory(&database),
-            _ => Err(Error::new(
-                ruby.exception_arg_error(),
-                format!("Invalid mode: {}", actual_mode),
-            )),
+        match open_mode {
+            OpenMode::Mmap => open_database_mmap(&database),
+            OpenMode::Memory => open_database_memory(&database),
         }
     }
 
