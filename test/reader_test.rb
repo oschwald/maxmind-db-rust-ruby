@@ -516,6 +516,71 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_shared_reader_concurrent_lookups_paths_batches_and_iteration
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1']
+    path = %w[country iso_code]
+    start_queue = Queue.new
+
+    threads = Array.new(8) do |worker_id|
+      Thread.new do
+        start_queue.pop
+        operations = 0
+        100.times do |index|
+          ip = ips[(worker_id + index) % ips.length]
+          reader.get(ip)
+          reader.get_path(ip, path)
+          reader.get_many(ips)
+          reader.get_many_path(ips, path)
+          operations += 4
+
+          operations += reader.each.take(3).length if (index % 25).zero?
+        end
+        operations
+      end
+    end
+
+    threads.length.times { start_queue << true }
+    operations = threads.map(&:value)
+
+    assert_operator operations.sum, :>, 0
+
+    reader.close
+  end
+
+  def test_close_during_concurrent_lookups_reports_closed_reader
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    start_queue = Queue.new
+
+    threads = Array.new(4) do
+      Thread.new do
+        start_queue.pop
+        operations = 0
+        loop do
+          reader.get('81.2.69.142')
+          reader.get_path('81.2.69.142', %w[country iso_code])
+          operations += 2
+        rescue RuntimeError => e
+          raise unless e.message.include?('closed')
+
+          break operations
+        end
+      end
+    end
+
+    threads.length.times { start_queue << true }
+    sleep 0.01
+    reader.close
+    operations = threads.map(&:value)
+
+    assert reader.closed
+    assert_operator operations.sum, :>, 0
+  end
+
   private
 
   def test_db_path
