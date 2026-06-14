@@ -557,32 +557,9 @@ impl Reader {
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
-        // Parse IP address
-        let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
-        if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                ipv6_in_ipv4_error(&parsed_ip),
-            ));
-        }
-
-        // Perform lookup
-        match reader.lookup(parsed_ip) {
-            Ok(Some(data)) => Ok(data.into_value()),
-            Ok(None) => Ok(ruby.qnil().as_value()),
-            Err(MaxMindDbError::InvalidDatabase { .. }) | Err(MaxMindDbError::Io(_)) => {
-                Err(Error::new(
-                    ExceptionClass::from_value(invalid_database_error().as_value())
-                        .expect("InvalidDatabaseError should convert to ExceptionClass"),
-                    ERR_BAD_DATA,
-                ))
-            }
-            Err(e) => Err(Error::new(
-                ruby.exception_runtime_error(),
-                format!("Database lookup failed: {}", e),
-            )),
-        }
+        lookup_result_to_value(&ruby, reader.lookup(parsed_ip), "Database lookup failed")
     }
 
     #[inline]
@@ -593,42 +570,10 @@ impl Reader {
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
-        // Parse IP address
-        let parsed_ip = parse_ip_address_fast(ip_address, &ruby)?;
-
-        if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                ipv6_in_ipv4_error(&parsed_ip),
-            ));
-        }
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
         // Perform lookup with prefix
-        match reader.lookup_prefix(parsed_ip) {
-            Ok((Some(data), prefix)) => {
-                let arr = ruby.ary_new();
-                arr.push(data.into_value())?;
-                arr.push(prefix.into_value_with(&ruby))?;
-                Ok(arr)
-            }
-            Ok((None, prefix)) => {
-                let arr = ruby.ary_new();
-                arr.push(ruby.qnil().as_value())?;
-                arr.push(prefix.into_value_with(&ruby))?;
-                Ok(arr)
-            }
-            Err(MaxMindDbError::InvalidDatabase { .. }) | Err(MaxMindDbError::Io(_)) => {
-                Err(Error::new(
-                    ExceptionClass::from_value(invalid_database_error().as_value())
-                        .expect("InvalidDatabaseError should convert to ExceptionClass"),
-                    ERR_BAD_DATA,
-                ))
-            }
-            Err(e) => Err(Error::new(
-                ruby.exception_runtime_error(),
-                format!("Database lookup failed: {}", e),
-            )),
-        }
+        lookup_prefix_result_to_array(&ruby, reader.lookup_prefix(parsed_ip))
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -768,12 +713,10 @@ impl Reader {
                     let values = (ipaddr, data.into_value());
                     ruby.yield_values::<(Value, Value), Value>(values)?;
                 }
-                Err(MaxMindDbError::InvalidDatabase { .. }) | Err(MaxMindDbError::Io(_)) => {
-                    return Err(Error::new(
-                        ExceptionClass::from_value(invalid_database_error().as_value())
-                            .expect("InvalidDatabaseError should convert to ExceptionClass"),
-                        ERR_BAD_DATA,
-                    ));
+                Err(MaxMindDbError::InvalidDatabase { .. })
+                | Err(MaxMindDbError::Decoding { .. })
+                | Err(MaxMindDbError::Io(_)) => {
+                    return Err(invalid_database_exception(ERR_BAD_DATA));
                 }
                 Err(e) => {
                     return Err(Error::new(
@@ -794,6 +737,24 @@ impl Reader {
             return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
         }
         Ok(guard)
+    }
+
+    #[inline]
+    fn parse_lookup_ip(&self, ip_address: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+        let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
+        self.validate_lookup_ip(parsed_ip, ruby)
+    }
+
+    #[inline]
+    fn validate_lookup_ip(&self, parsed_ip: IpAddr, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+        if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
+            Err(Error::new(
+                ruby.exception_arg_error(),
+                ipv6_in_ipv4_error(&parsed_ip),
+            ))
+        } else {
+            Ok(parsed_ip)
+        }
     }
 }
 
@@ -922,6 +883,48 @@ fn parse_ipv4_string(bytes: &[u8]) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(octets))
 }
 
+#[inline]
+fn lookup_result_to_value(
+    ruby: &magnus::Ruby,
+    result: Result<Option<RubyDecodedValue>, MaxMindDbError>,
+    error_context: &str,
+) -> Result<Value, Error> {
+    match result {
+        Ok(Some(data)) => Ok(data.into_value()),
+        Ok(None) => Ok(ruby.qnil().as_value()),
+        Err(err) => Err(lookup_error(ruby, err, error_context)),
+    }
+}
+
+#[inline]
+fn lookup_prefix_result_to_array(
+    ruby: &magnus::Ruby,
+    result: Result<(Option<RubyDecodedValue>, usize), MaxMindDbError>,
+) -> Result<RArray, Error> {
+    match result {
+        Ok((data, prefix)) => {
+            let arr = ruby.ary_new();
+            arr.push(data.map_or_else(|| ruby.qnil().as_value(), RubyDecodedValue::into_value))?;
+            arr.push(prefix.into_value_with(ruby))?;
+            Ok(arr)
+        }
+        Err(err) => Err(lookup_error(ruby, err, "Database lookup failed")),
+    }
+}
+
+#[inline]
+fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Error {
+    match err {
+        MaxMindDbError::InvalidDatabase { .. }
+        | MaxMindDbError::Decoding { .. }
+        | MaxMindDbError::Io(_) => invalid_database_exception(ERR_BAD_DATA),
+        other => Error::new(
+            ruby.exception_runtime_error(),
+            format!("{}: {}", context, other),
+        ),
+    }
+}
+
 /// Generate error message for IPv6 in IPv4-only database
 fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
     format!(
@@ -1013,6 +1016,14 @@ fn invalid_database_error() -> RClass {
     let rust = rust_module(&ruby);
     rust.const_get::<_, RClass>("InvalidDatabaseError")
         .expect("InvalidDatabaseError class should exist")
+}
+
+fn invalid_database_exception(message: &str) -> Error {
+    Error::new(
+        ExceptionClass::from_value(invalid_database_error().as_value())
+            .expect("InvalidDatabaseError should convert to ExceptionClass"),
+        message.to_owned(),
+    )
 }
 
 fn rust_module(ruby: &magnus::Ruby) -> RModule {
