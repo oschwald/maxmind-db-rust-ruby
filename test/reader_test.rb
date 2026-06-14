@@ -446,10 +446,84 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_path
+    skip 'Test database not found' unless File.exist?(decoder_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(decoder_db_path)
+
+    assert_equal 'hello', reader.get_path('1.1.1.1', %w[map mapX utf8_stringX])
+    assert_equal 1, reader.get_path('1.1.1.1', ['array', 0])
+    assert_equal 3, reader.get_path('1.1.1.1', ['array', -1])
+    assert_nil reader.get_path('1.1.1.1', ['array', 3])
+    assert_nil reader.get_path('1.1.1.1', ['missing'])
+
+    reader.close
+  end
+
+  def test_get_path_rejects_invalid_path
+    skip 'Test database not found' unless File.exist?(decoder_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(decoder_db_path)
+
+    error = assert_raises(ArgumentError) do
+      reader.get_path('1.1.1.1', 'array')
+    end
+    assert_match(/Path must be an Array/, error.message)
+
+    error = assert_raises(ArgumentError) do
+      reader.get_path('1.1.1.1', ['array', true])
+    end
+    assert_match(/Path elements must be Strings or Integers/, error.message)
+
+    reader.close
+  end
+
+  def test_get_many
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1', '81.2.69.142']
+
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(ips)
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(ips.each)
+
+    reader.close
+  end
+
+  def test_get_many_path
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1', '81.2.69.142']
+    path = %w[country iso_code]
+
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips, path)
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips.each, path)
+
+    reader.close
+  end
+
+  def test_get_many_rejects_invalid_input
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    error = assert_raises(ArgumentError) do
+      reader.get_many('81.2.69.142')
+    end
+    assert_match(/ips must be an Array or Enumerable/, error.message)
+
+    reader.close
+  end
+
   private
 
   def test_db_path
     File.join(TEST_DATA_DIR, 'GeoIP2-City-Test.mmdb')
+  end
+
+  def decoder_db_path
+    File.join(TEST_DATA_DIR, 'MaxMind-DB-test-decoder.mmdb')
   end
 
   def ipv6_test_db_path

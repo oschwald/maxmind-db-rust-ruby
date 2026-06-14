@@ -5,10 +5,10 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, ExceptionClass,
-    typed_data::Obj, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
+    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, typed_data::Obj,
+    ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
-use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
+use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
 use rustc_hash::FxHasher;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -341,6 +341,12 @@ impl OpenMode {
     }
 }
 
+enum OwnedPathElement {
+    Key(String),
+    Index(usize),
+    IndexFromEnd(usize),
+}
+
 impl ReaderSource {
     #[inline]
     fn lookup(
@@ -371,6 +377,18 @@ impl ReaderSource {
             }
         };
         Ok((result, prefix_len))
+    }
+
+    #[inline]
+    fn lookup_path(
+        &self,
+        ip: IpAddr,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Option<RubyDecodedValue>, maxminddb_crate::MaxMindDbError> {
+        match self {
+            ReaderSource::Mmap(reader) => reader.lookup(ip)?.decode_path(path_elements),
+            ReaderSource::Memory(reader) => reader.lookup(ip)?.decode_path(path_elements),
+        }
     }
 
     #[inline]
@@ -563,6 +581,25 @@ impl Reader {
     }
 
     #[inline]
+    fn get_path(&self, ip_address: Value, path: Value) -> Result<Value, Error> {
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
+
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
+        let owned_path = parse_path(path, &ruby)?;
+        let path_elements = path_elements_from_owned_path(&owned_path);
+
+        lookup_result_to_value(
+            &ruby,
+            reader.lookup_path(parsed_ip, &path_elements),
+            "Database lookup failed",
+        )
+    }
+
+    #[inline]
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
@@ -574,6 +611,52 @@ impl Reader {
 
         // Perform lookup with prefix
         lookup_prefix_result_to_array(&ruby, reader.lookup_prefix(parsed_ip))
+    }
+
+    fn get_many(&self, ips: Value) -> Result<RArray, Error> {
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
+
+        let ips = value_to_array(ips, &ruby, "ips must be an Array or Enumerable")?;
+        let results = ruby.ary_new_capa(ips.len());
+        for index in 0..ips.len() {
+            let ip = ips.entry::<Value>(index as isize)?;
+            let parsed_ip = self.parse_lookup_ip(ip, &ruby)?;
+            results.push(lookup_result_to_value(
+                &ruby,
+                reader.lookup(parsed_ip),
+                "Database lookup failed",
+            )?)?;
+        }
+
+        Ok(results)
+    }
+
+    fn get_many_path(&self, ips: Value, path: Value) -> Result<RArray, Error> {
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
+
+        let ips = value_to_array(ips, &ruby, "ips must be an Array or Enumerable")?;
+        let owned_path = parse_path(path, &ruby)?;
+        let path_elements = path_elements_from_owned_path(&owned_path);
+        let results = ruby.ary_new_capa(ips.len());
+        for index in 0..ips.len() {
+            let ip = ips.entry::<Value>(index as isize)?;
+            let parsed_ip = self.parse_lookup_ip(ip, &ruby)?;
+            results.push(lookup_result_to_value(
+                &ruby,
+                reader.lookup_path(parsed_ip, &path_elements),
+                "Database lookup failed",
+            )?)?;
+        }
+
+        Ok(results)
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -766,6 +849,70 @@ fn create_reader(source: ReaderSource) -> Reader {
         closed: Arc::new(AtomicBool::new(false)),
         ip_version,
     }
+}
+
+fn parse_path(path: Value, ruby: &magnus::Ruby) -> Result<Vec<OwnedPathElement>, Error> {
+    let path = RArray::try_convert(path).map_err(|_| {
+        Error::new(
+            ruby.exception_arg_error(),
+            "Path must be an Array of String and Integer elements",
+        )
+    })?;
+
+    let mut elements = Vec::with_capacity(path.len());
+    for index in 0..path.len() {
+        let item = path.entry::<Value>(index as isize)?;
+        if let Ok(key) = RString::try_convert(item) {
+            elements.push(OwnedPathElement::Key(key.to_string()?));
+            continue;
+        }
+        if let Ok(index) = isize::try_convert(item) {
+            elements.push(signed_index_to_owned_path_element(index));
+            continue;
+        }
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            "Path elements must be Strings or Integers",
+        ));
+    }
+
+    Ok(elements)
+}
+
+#[inline]
+fn signed_index_to_owned_path_element(index: isize) -> OwnedPathElement {
+    if index >= 0 {
+        OwnedPathElement::Index(index as usize)
+    } else {
+        let index_from_end = index
+            .checked_neg()
+            .and_then(|index| index.checked_sub(1))
+            .map(|index| index as usize)
+            .unwrap_or(usize::MAX);
+        OwnedPathElement::IndexFromEnd(index_from_end)
+    }
+}
+
+fn path_elements_from_owned_path(path: &[OwnedPathElement]) -> Vec<PathElement<'_>> {
+    path.iter()
+        .map(|element| match element {
+            OwnedPathElement::Key(key) => PathElement::Key(key.as_str()),
+            OwnedPathElement::Index(index) => PathElement::Index(*index),
+            OwnedPathElement::IndexFromEnd(index) => PathElement::IndexFromEnd(*index),
+        })
+        .collect()
+}
+
+fn value_to_array(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<RArray, Error> {
+    if let Ok(array) = RArray::try_convert(value) {
+        return Ok(array);
+    }
+
+    let array_value = value
+        .funcall::<_, _, Value>("to_a", ())
+        .map_err(|_| Error::new(ruby.exception_arg_error(), error_message.to_owned()))?;
+    RArray::try_convert(array_value)
+        .map_err(|_| Error::new(ruby.exception_arg_error(), error_message.to_owned()))
 }
 
 /// Parse IP address from Ruby value (String or IPAddr) - optimized version
@@ -1107,10 +1254,13 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     let reader_class = rust.define_class("Reader", ruby.class_object())?;
     reader_class.define_singleton_method("new", magnus::function!(Reader::new, -1))?;
     reader_class.define_method("get", magnus::method!(Reader::get, 1))?;
+    reader_class.define_method("get_path", magnus::method!(Reader::get_path, 2))?;
     reader_class.define_method(
         "get_with_prefix_length",
         magnus::method!(Reader::get_with_prefix_length, 1),
     )?;
+    reader_class.define_method("get_many", magnus::method!(Reader::get_many, 1))?;
+    reader_class.define_method("get_many_path", magnus::method!(Reader::get_many_path, 2))?;
     reader_class.define_method("metadata", magnus::method!(Reader::metadata, 0))?;
     reader_class.define_method("close", magnus::method!(Reader::close, 0))?;
     reader_class.define_method("closed", magnus::method!(Reader::closed, 0))?;

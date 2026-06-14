@@ -16,6 +16,7 @@ It keeps the API close to the official `maxmind-db` gem while adding Rust-backed
 - Supports file-backed, MMAP, and in-memory modes
 - Includes network iteration support
 - Accepts both `String` and `IPAddr` inputs
+- Includes selective path lookup and batch lookup extensions
 
 ## Installation
 
@@ -77,6 +78,26 @@ reader = MaxMind::DB::Rust::Reader.new('GeoIP2-City.mmdb')
 record, prefix_length = reader.get_with_prefix_length('8.8.8.8')
 puts "Record: #{record}"
 puts "Prefix length: #{prefix_length}"
+
+reader.close
+```
+
+### Selective and Batch Lookups
+
+```ruby
+require 'maxmind/db/rust'
+
+reader = MaxMind::DB::Rust::Reader.new('GeoIP2-City.mmdb')
+
+# Decode one field without materializing the full record.
+iso_code = reader.get_path('8.8.8.8', ['country', 'iso_code'])
+
+# Batch full-record lookups.
+ips = ['8.8.8.8', '1.1.1.1', '208.67.222.222']
+records = reader.get_many(ips)
+
+# Batch one-field lookups.
+iso_codes = reader.get_many_path(ips, ['country', 'iso_code'])
 
 reader.close
 ```
@@ -214,6 +235,17 @@ Look up an IP address in the database.
 - `ArgumentError`: If looking up IPv6 in an IPv4-only database
 - `MaxMind::DB::Rust::InvalidDatabaseError`: If the database is corrupt
 
+#### `get_path(ip_address, path)`
+
+Look up an IP address and return only the value at `path`.
+
+**Parameters:**
+
+- `ip_address` (String or IPAddr): The IP address to look up
+- `path` (Array): String map keys and Integer array indexes. Negative indexes count from the end.
+
+**Returns:** The value at the path, or `nil` if the record or path is not found
+
 #### `get_with_prefix_length(ip_address)`
 
 Look up an IP address and return the prefix length.
@@ -223,6 +255,27 @@ Look up an IP address and return the prefix length.
 - `ip_address` (String or IPAddr): The IP address to look up
 
 **Returns:** Array `[record, prefix_length]` where record is a Hash or `nil`
+
+#### `get_many(ip_addresses)`
+
+Look up multiple IP addresses.
+
+**Parameters:**
+
+- `ip_addresses` (Array or Enumerable): IP address strings or IPAddr objects
+
+**Returns:** Array of record values in input order
+
+#### `get_many_path(ip_addresses, path)`
+
+Look up one path for multiple IP addresses.
+
+**Parameters:**
+
+- `ip_addresses` (Array or Enumerable): IP address strings or IPAddr objects
+- `path` (Array): String map keys and Integer array indexes
+
+**Returns:** Array of path values in input order
 
 #### `metadata()`
 
