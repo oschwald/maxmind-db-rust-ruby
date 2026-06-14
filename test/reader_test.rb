@@ -246,6 +246,43 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_each_returns_enumerator_without_block
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    enumerator = reader.each
+
+    assert_kind_of Enumerator, enumerator
+
+    first_three = enumerator.take(3)
+
+    assert_equal 3, first_three.length
+    first_three.each do |network, data|
+      assert_kind_of IPAddr, network
+      assert(data.nil? || data.is_a?(Hash))
+    end
+
+    reader.close
+  end
+
+  def test_each_with_network_returns_enumerator_without_block
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    enumerator = reader.each('214.0.0.0/8')
+
+    assert_kind_of Enumerator, enumerator
+
+    networks = enumerator.take(3).map { |network, _data| network.to_s }
+
+    assert_predicate networks.length, :positive?
+    networks.each do |network|
+      assert network.start_with?('214.'), "Network #{network} should be in 214.0.0.0/8"
+    end
+
+    reader.close
+  end
+
   def test_iterator_within_ipv4_network_string
     skip 'Test database not found' unless File.exist?(test_db_path)
 

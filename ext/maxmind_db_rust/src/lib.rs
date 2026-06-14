@@ -6,7 +6,7 @@ use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
     error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, ExceptionClass,
-    IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
+    typed_data::Obj, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
@@ -608,19 +608,16 @@ impl Reader {
         self.closed.load(Ordering::Acquire)
     }
 
-    fn each(&self, args: &[Value]) -> Result<Value, Error> {
-        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+    fn each(ruby: &magnus::Ruby, rb_self: Obj<Self>, args: &[Value]) -> Result<Value, Error> {
+        let reader_self = &*rb_self;
 
-        let guard = self.get_reader(&ruby)?;
+        let guard = reader_self.get_reader(ruby)?;
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
         // If no block given, return enumerator
         if !ruby.block_given() {
-            return Err(Error::new(
-                ruby.exception_runtime_error(),
-                "Enumerator support not yet implemented, please provide a block",
-            ));
+            return Ok(rb_self.enumeratorize("each", args).as_value());
         }
 
         let ip_version = reader.metadata().ip_version;
