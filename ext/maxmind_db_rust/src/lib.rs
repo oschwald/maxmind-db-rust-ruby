@@ -620,18 +620,20 @@ impl Reader {
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
-        let ips = value_to_array(ips, &ruby, "ips must be an Array or Enumerable")?;
-        let results = ruby.ary_new_capa(ips.len());
-        for index in 0..ips.len() {
-            let ip = ips.entry::<Value>(index as isize)?;
-            let parsed_ip = self.parse_lookup_ip(ip, &ruby)?;
-            results.push(lookup_result_to_value(
-                &ruby,
-                reader.lookup(parsed_ip),
-                "Database lookup failed",
-            )?)?;
+        if let Ok(ips) = RArray::try_convert(ips) {
+            let results = ruby.ary_new_capa(ips.len());
+            for index in 0..ips.len() {
+                let ip = ips.entry::<Value>(index as isize)?;
+                results.push(self.lookup_ip_value(&ruby, reader, ip)?)?;
+            }
+            return Ok(results);
         }
 
+        ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
+        let results = ruby.ary_new();
+        for ip in ips.enumeratorize("each", ()) {
+            results.push(self.lookup_ip_value(&ruby, reader, ip?)?)?;
+        }
         Ok(results)
     }
 
@@ -642,20 +644,23 @@ impl Reader {
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
-        let ips = value_to_array(ips, &ruby, "ips must be an Array or Enumerable")?;
         let owned_path = parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(&owned_path);
-        let results = ruby.ary_new_capa(ips.len());
-        for index in 0..ips.len() {
-            let ip = ips.entry::<Value>(index as isize)?;
-            let parsed_ip = self.parse_lookup_ip(ip, &ruby)?;
-            results.push(lookup_result_to_value(
-                &ruby,
-                reader.lookup_path(parsed_ip, &path_elements),
-                "Database lookup failed",
-            )?)?;
+
+        if let Ok(ips) = RArray::try_convert(ips) {
+            let results = ruby.ary_new_capa(ips.len());
+            for index in 0..ips.len() {
+                let ip = ips.entry::<Value>(index as isize)?;
+                results.push(self.lookup_ip_path_value(&ruby, reader, ip, &path_elements)?)?;
+            }
+            return Ok(results);
         }
 
+        ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
+        let results = ruby.ary_new();
+        for ip in ips.enumeratorize("each", ()) {
+            results.push(self.lookup_ip_path_value(&ruby, reader, ip?, &path_elements)?)?;
+        }
         Ok(results)
     }
 
@@ -836,6 +841,33 @@ impl Reader {
             Ok(parsed_ip)
         }
     }
+
+    #[inline]
+    fn lookup_ip_value(
+        &self,
+        ruby: &magnus::Ruby,
+        reader: &ReaderSource,
+        ip: Value,
+    ) -> Result<Value, Error> {
+        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        lookup_result_to_value(ruby, reader.lookup(parsed_ip), "Database lookup failed")
+    }
+
+    #[inline]
+    fn lookup_ip_path_value(
+        &self,
+        ruby: &magnus::Ruby,
+        reader: &ReaderSource,
+        ip: Value,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Value, Error> {
+        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        lookup_result_to_value(
+            ruby,
+            reader.lookup_path(parsed_ip, path_elements),
+            "Database lookup failed",
+        )
+    }
 }
 
 unsafe impl Send for Reader {}
@@ -903,16 +935,15 @@ fn path_elements_from_owned_path(path: &[OwnedPathElement]) -> Vec<PathElement<'
         .collect()
 }
 
-fn value_to_array(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<RArray, Error> {
-    if let Ok(array) = RArray::try_convert(value) {
-        return Ok(array);
+fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {
+    if value.respond_to("each", false)? {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ruby.exception_arg_error(),
+            error_message.to_owned(),
+        ))
     }
-
-    let array_value = value
-        .funcall::<_, _, Value>("to_a", ())
-        .map_err(|_| Error::new(ruby.exception_arg_error(), error_message.to_owned()))?;
-    RArray::try_convert(array_value)
-        .map_err(|_| Error::new(ruby.exception_arg_error(), error_message.to_owned()))
 }
 
 /// Parse IP address from Ruby value (String or IPAddr) - optimized version

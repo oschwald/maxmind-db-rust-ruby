@@ -490,6 +490,28 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_many_streams_enumerables_without_materializing
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1', '81.2.69.142']
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      return enum_for(:each) unless block
+
+      ips.each(&block)
+    end
+    stream.define_singleton_method(:to_a) do
+      raise 'get_many should not materialize Enumerable inputs'
+    end
+
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(stream)
+    assert_equal ips.map { |ip| reader.get_path(ip, %w[country iso_code]) },
+                 reader.get_many_path(stream, %w[country iso_code])
+
+    reader.close
+  end
+
   def test_get_many_path
     skip 'Test database not found' unless File.exist?(test_db_path)
 
