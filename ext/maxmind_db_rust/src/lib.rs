@@ -19,7 +19,7 @@ use std::{
     fs::File,
     hash::{Hash, Hasher},
     io::Read as IoRead,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     path::Path,
     str::FromStr,
     sync::{
@@ -819,12 +819,7 @@ fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Er
             )
         })?;
 
-        return IpAddr::from_str(ip_str).map_err(|_| {
-            Error::new(
-                ruby.exception_arg_error(),
-                format!("'{}' does not appear to be an IPv4 or IPv6 address", ip_str),
-            )
-        });
+        return parse_ip_string(ip_str, ruby);
     }
 
     // Slow path: Try as IPAddr object
@@ -855,21 +850,71 @@ fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Er
     }
 
     if let Ok(ipaddr_obj) = value.funcall::<_, _, String>("to_s", ()) {
-        return IpAddr::from_str(&ipaddr_obj).map_err(|_| {
-            Error::new(
-                ruby.exception_arg_error(),
-                format!(
-                    "'{}' does not appear to be an IPv4 or IPv6 address",
-                    ipaddr_obj
-                ),
-            )
-        });
+        return parse_ip_string(&ipaddr_obj, ruby);
     }
 
     Err(Error::new(
         ruby.exception_arg_error(),
         format!("'{}' does not appear to be an IPv4 or IPv6 address", value),
     ))
+}
+
+#[inline(always)]
+fn parse_ip_string(s: &str, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+    if let Some(ip) = parse_ipv4_string(s.as_bytes()) {
+        return Ok(IpAddr::V4(ip));
+    }
+
+    IpAddr::from_str(s).map_err(|_| {
+        Error::new(
+            ruby.exception_arg_error(),
+            format!("'{}' does not appear to be an IPv4 or IPv6 address", s),
+        )
+    })
+}
+
+#[inline(always)]
+fn parse_ipv4_string(bytes: &[u8]) -> Option<Ipv4Addr> {
+    let mut octets = [0u8; 4];
+    let mut octet_index = 0;
+    let mut value: u16 = 0;
+    let mut digits = 0;
+
+    for &byte in bytes {
+        if byte == b'.' {
+            if digits == 0 || octet_index == 3 {
+                return None;
+            }
+            octets[octet_index] = value as u8;
+            octet_index += 1;
+            value = 0;
+            digits = 0;
+            continue;
+        }
+
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        if digits == 1 && value == 0 {
+            return None;
+        }
+
+        digits += 1;
+        if digits > 3 {
+            return None;
+        }
+        value = value * 10 + u16::from(byte - b'0');
+        if value > u16::from(u8::MAX) {
+            return None;
+        }
+    }
+
+    if octet_index != 3 || digits == 0 {
+        return None;
+    }
+    octets[octet_index] = value as u8;
+
+    Some(Ipv4Addr::from(octets))
 }
 
 /// Generate error message for IPv6 in IPv4-only database
@@ -1094,4 +1139,40 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     rust.const_set("MODE_MMAP", ruby.to_symbol("MODE_MMAP"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ipv4_string;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn parses_strict_ipv4_strings() {
+        assert_eq!(
+            parse_ipv4_string(b"0.1.2.255"),
+            Some(Ipv4Addr::new(0, 1, 2, 255))
+        );
+        assert_eq!(
+            parse_ipv4_string(b"192.0.2.1"),
+            Some(Ipv4Addr::new(192, 0, 2, 1))
+        );
+    }
+
+    #[test]
+    fn rejects_ipv4_strings_that_std_parser_rejects() {
+        for value in [
+            b"01.2.3.4".as_slice(),
+            b"1.02.3.4".as_slice(),
+            b"1.2.3.04".as_slice(),
+            b"1.2.3".as_slice(),
+            b"1.2.3.4.5".as_slice(),
+            b"1..2.3".as_slice(),
+            b"256.1.1.1".as_slice(),
+            b"1.2.3.4 ".as_slice(),
+            b" 1.2.3.4".as_slice(),
+            b"2001:db8::1".as_slice(),
+        ] {
+            assert_eq!(parse_ipv4_string(value), None);
+        }
+    }
 }
