@@ -485,6 +485,26 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_path_cache_uses_path_contents
+    skip 'Test database not found' unless File.exist?(decoder_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(decoder_db_path)
+    path = ['array', 0]
+
+    assert_equal 1, reader.get_path('1.1.1.1', path)
+    assert_equal 1, reader.get_path('1.1.1.1', path)
+
+    path[1] = 1
+
+    assert_equal 2, reader.get_path('1.1.1.1', path)
+
+    path[1] = -1
+
+    assert_equal 3, reader.get_path('1.1.1.1', path)
+
+    reader.close
+  end
+
   def test_get_path_rejects_invalid_path
     skip 'Test database not found' unless File.exist?(decoder_db_path)
 

@@ -14,7 +14,7 @@ use rustc_hash::FxHasher;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
     cell::{OnceCell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fmt,
     fs::File,
     hash::{Hash, Hasher},
@@ -24,7 +24,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -37,6 +37,7 @@ const MAP_KEY_ROOTS_CONST: &str = "__MAP_KEY_ROOTS__";
 const STRING_CACHE_MAX: usize = 4096;
 const STRING_CACHE_MIN_LEN: usize = 2;
 const STRING_CACHE_MAX_LEN: usize = 64;
+const PATH_CACHE_MAX_ENTRIES: usize = 64;
 
 #[derive(Default)]
 struct StringCacheEntry {
@@ -343,10 +344,16 @@ impl OpenMode {
     }
 }
 
+#[derive(PartialEq, Eq)]
 enum OwnedPathElement {
     Key(String),
     Index(usize),
     IndexFromEnd(usize),
+}
+
+struct CachedPath {
+    hash: u64,
+    elements: Arc<[OwnedPathElement]>,
 }
 
 impl ReaderSource {
@@ -545,6 +552,7 @@ unsafe impl Send for Metadata {}
 struct Reader {
     reader: Arc<ArcSwapOption<ReaderSource>>,
     closed: Arc<AtomicBool>,
+    path_cache: Arc<Mutex<VecDeque<CachedPath>>>,
     ip_version: u16,
 }
 
@@ -592,8 +600,8 @@ impl Reader {
         let reader = reader_option.as_ref().unwrap();
 
         let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
-        let owned_path = parse_path(path, &ruby)?;
-        let path_elements = path_elements_from_owned_path(&owned_path);
+        let owned_path = self.parse_path(path, &ruby)?;
+        let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
         lookup_result_to_value(
             &ruby,
@@ -647,8 +655,8 @@ impl Reader {
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
-        let owned_path = parse_path(path, &ruby)?;
-        let path_elements = path_elements_from_owned_path(&owned_path);
+        let owned_path = self.parse_path(path, &ruby)?;
+        let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
         if let Ok(ips) = RArray::try_convert(ips) {
             let results = ruby.ary_new_capa(ips.len());
@@ -871,6 +879,62 @@ impl Reader {
             "Database lookup failed",
         )
     }
+
+    fn parse_path(
+        &self,
+        path: Value,
+        ruby: &magnus::Ruby,
+    ) -> Result<Arc<[OwnedPathElement]>, Error> {
+        let path = path_array(path, ruby)?;
+        let hash = path_cache_hash(path, ruby)?;
+
+        if let Some(cached) = self.cached_path(path, hash)? {
+            return Ok(cached);
+        }
+
+        let parsed_path: Arc<[OwnedPathElement]> = parse_path_array(path, ruby)?.into();
+        self.store_cached_path(hash, parsed_path.clone());
+        Ok(parsed_path)
+    }
+
+    fn cached_path(
+        &self,
+        path: RArray,
+        hash: u64,
+    ) -> Result<Option<Arc<[OwnedPathElement]>>, Error> {
+        let candidates = match self.path_cache.lock() {
+            Ok(cache) => cache
+                .iter()
+                .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
+                .map(|entry| entry.elements.clone())
+                .collect::<Vec<_>>(),
+            Err(_) => return Ok(None),
+        };
+
+        for candidate in candidates {
+            if path_matches_cached(path, candidate.as_ref())? {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn store_cached_path(&self, hash: u64, elements: Arc<[OwnedPathElement]>) {
+        if let Ok(mut cache) = self.path_cache.lock() {
+            if cache
+                .iter()
+                .any(|entry| entry.hash == hash && entry.elements.as_ref() == elements.as_ref())
+            {
+                return;
+            }
+
+            cache.push_back(CachedPath { hash, elements });
+            while cache.len() > PATH_CACHE_MAX_ENTRIES {
+                cache.pop_front();
+            }
+        }
+    }
 }
 
 unsafe impl Send for Reader {}
@@ -882,18 +946,21 @@ fn create_reader(source: ReaderSource) -> Reader {
     Reader {
         reader: Arc::new(ArcSwapOption::from(Some(source))),
         closed: Arc::new(AtomicBool::new(false)),
+        path_cache: Arc::new(Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES))),
         ip_version,
     }
 }
 
-fn parse_path(path: Value, ruby: &magnus::Ruby) -> Result<Vec<OwnedPathElement>, Error> {
-    let path = RArray::try_convert(path).map_err(|_| {
+fn path_array(path: Value, ruby: &magnus::Ruby) -> Result<RArray, Error> {
+    RArray::try_convert(path).map_err(|_| {
         Error::new(
             ruby.exception_arg_error(),
             "Path must be an Array of String and Integer elements",
         )
-    })?;
+    })
+}
 
+fn parse_path_array(path: RArray, ruby: &magnus::Ruby) -> Result<Vec<OwnedPathElement>, Error> {
     let mut elements = Vec::with_capacity(path.len());
     for index in 0..path.len() {
         let item = path.entry::<Value>(index as isize)?;
@@ -925,6 +992,82 @@ fn signed_index_to_owned_path_element(index: isize) -> OwnedPathElement {
             .map(|index| index as usize)
             .unwrap_or(usize::MAX);
         OwnedPathElement::IndexFromEnd(index_from_end)
+    }
+}
+
+fn path_cache_hash(path: RArray, ruby: &magnus::Ruby) -> Result<u64, Error> {
+    let mut hasher = FxHasher::default();
+    path.len().hash(&mut hasher);
+
+    for index in 0..path.len() {
+        let item = path.entry::<Value>(index as isize)?;
+        if let Ok(key) = RString::try_convert(item) {
+            0_u8.hash(&mut hasher);
+            hash_path_key(key, &mut hasher)?;
+            continue;
+        }
+        if let Ok(index) = isize::try_convert(item) {
+            1_u8.hash(&mut hasher);
+            index.hash(&mut hasher);
+            continue;
+        }
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            "Path elements must be Strings or Integers",
+        ));
+    }
+
+    Ok(hasher.finish())
+}
+
+fn hash_path_key(key: RString, hasher: &mut FxHasher) -> Result<(), Error> {
+    // SAFETY: the borrowed str is used only for immediate hashing and is not
+    // stored across any call that could mutate or free the Ruby string.
+    if let Some(key_str) = unsafe { key.test_as_str() } {
+        key_str.hash(hasher);
+    } else {
+        key.to_string()?.hash(hasher);
+    }
+    Ok(())
+}
+
+fn path_matches_cached(path: RArray, cached: &[OwnedPathElement]) -> Result<bool, Error> {
+    if path.len() != cached.len() {
+        return Ok(false);
+    }
+
+    for (index, cached_element) in cached.iter().enumerate() {
+        let item = path.entry::<Value>(index as isize)?;
+        match cached_element {
+            OwnedPathElement::Key(expected) => {
+                let Ok(key) = RString::try_convert(item) else {
+                    return Ok(false);
+                };
+                if !path_key_matches(key, expected)? {
+                    return Ok(false);
+                }
+            }
+            OwnedPathElement::Index(_) | OwnedPathElement::IndexFromEnd(_) => {
+                let Ok(index) = isize::try_convert(item) else {
+                    return Ok(false);
+                };
+                if signed_index_to_owned_path_element(index) != *cached_element {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn path_key_matches(key: RString, expected: &str) -> Result<bool, Error> {
+    // SAFETY: the borrowed str is used only for immediate comparison and is not
+    // stored across any call that could mutate or free the Ruby string.
+    if let Some(key_str) = unsafe { key.test_as_str() } {
+        Ok(key_str == expected)
+    } else {
+        Ok(key.to_string()? == expected)
     }
 }
 
