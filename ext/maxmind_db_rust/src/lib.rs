@@ -625,7 +625,11 @@ impl Reader {
         let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
         // Perform lookup with prefix
-        lookup_prefix_result_to_array(&ruby, reader.lookup_prefix(parsed_ip))
+        lookup_prefix_result_to_array(
+            &ruby,
+            reader.lookup_prefix(parsed_ip),
+            "Database lookup failed",
+        )
     }
 
     fn get_many(&self, ips: Value) -> Result<RArray, Error> {
@@ -635,10 +639,10 @@ impl Reader {
         let reader_option = guard.as_ref();
         let reader = reader_option.as_ref().unwrap();
 
-        if let Ok(ips) = RArray::try_convert(ips) {
-            let results = ruby.ary_new_capa(ips.len());
-            for index in 0..ips.len() {
-                let ip = ips.entry::<Value>(index as isize)?;
+        if let Ok(ip_array) = RArray::try_convert(ips) {
+            let results = ruby.ary_new_capa(ip_array.len());
+            for index in 0..ip_array.len() {
+                let ip = ip_array.entry::<Value>(index as isize)?;
                 results.push(self.lookup_ip_value(&ruby, reader, ip)?)?;
             }
             return Ok(results);
@@ -662,10 +666,10 @@ impl Reader {
         let owned_path = self.parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
-        if let Ok(ips) = RArray::try_convert(ips) {
-            let results = ruby.ary_new_capa(ips.len());
-            for index in 0..ips.len() {
-                let ip = ips.entry::<Value>(index as isize)?;
+        if let Ok(ip_array) = RArray::try_convert(ips) {
+            let results = ruby.ary_new_capa(ip_array.len());
+            for index in 0..ip_array.len() {
+                let ip = ip_array.entry::<Value>(index as isize)?;
                 results.push(self.lookup_ip_path_value(&ruby, reader, ip, &path_elements)?)?;
             }
             return Ok(results);
@@ -800,13 +804,9 @@ impl Reader {
             ));
         }
 
-        let mut iter = reader.within(network).map_err(|e| {
-            Error::new(
-                ExceptionClass::from_value(invalid_database_error().as_value())
-                    .expect("InvalidDatabaseError should convert to ExceptionClass"),
-                format!("Failed to iterate: {}", e),
-            )
-        })?;
+        let mut iter = reader
+            .within(network)
+            .map_err(|e| invalid_database_exception(&format!("Failed to iterate: {}", e)))?;
         // Get IPAddr class
         let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
 
@@ -1239,6 +1239,7 @@ fn lookup_result_to_value(
 fn lookup_prefix_result_to_array(
     ruby: &magnus::Ruby,
     result: Result<(Option<RubyDecodedValue>, usize), MaxMindDbError>,
+    error_context: &str,
 ) -> Result<RArray, Error> {
     match result {
         Ok((data, prefix)) => {
@@ -1247,7 +1248,7 @@ fn lookup_prefix_result_to_array(
             arr.push(prefix.into_value_with(ruby))?;
             Ok(arr)
         }
-        Err(err) => Err(lookup_error(ruby, err, "Database lookup failed")),
+        Err(err) => Err(lookup_error(ruby, err, error_context)),
     }
 }
 
@@ -1295,14 +1296,10 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
         )
     })?;
     let reader = MaxMindReader::from_source(mmap).map_err(|_| {
-        Error::new(
-            ExceptionClass::from_value(invalid_database_error().as_value())
-                .expect("InvalidDatabaseError should convert to ExceptionClass"),
-            format!(
-                "Error opening database file ({}). Is this a valid MaxMind DB file?",
-                path
-            ),
-        )
+        invalid_database_exception(&format!(
+            "Error opening database file ({}). Is this a valid MaxMind DB file?",
+            path
+        ))
     })?;
 
     Ok(create_reader(ReaderSource::Mmap(reader)))
