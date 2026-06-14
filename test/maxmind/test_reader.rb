@@ -11,7 +11,6 @@
 # - Changed MaxMind::DB to MaxMind::DB::Rust
 # - Updated test data paths to test/data/MaxMind-DB/test-data/
 # - Namespaced MaxMind::DB APIs under MaxMind::DB::Rust
-# - Removed test_reader_inspect (not implemented)
 # - Updated error messages to match Rust implementation
 # - Removed internal method tests (read_node)
 
@@ -43,6 +42,22 @@ class MaxMindReaderTest < Minitest::Test
           reader.close
         end
       end
+    end
+  end
+
+  def test_reader_inspect
+    modes = [
+      MaxMind::DB::Rust::MODE_FILE,
+      MaxMind::DB::Rust::MODE_MEMORY,
+    ]
+
+    modes.each do |mode|
+      filename = 'test/data/MaxMind-DB/test-data/MaxMind-DB-test-ipv4-24.mmdb'
+      reader = MaxMind::DB::Rust::Reader.new(filename, mode: mode)
+
+      assert_instance_of(String, reader.inspect)
+
+      reader.close
     end
   end
 

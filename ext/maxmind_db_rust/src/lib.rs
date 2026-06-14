@@ -711,6 +711,15 @@ impl Reader {
         self.closed.load(Ordering::Acquire)
     }
 
+    fn inspect(&self) -> String {
+        format!(
+            "#<MaxMind::DB::Rust::Reader:0x{:x} @closed={} @ip_version={}>",
+            self as *const Self as usize,
+            self.closed(),
+            self.ip_version,
+        )
+    }
+
     fn each(ruby: &magnus::Ruby, rb_self: Obj<Self>, args: &[Value]) -> Result<Value, Error> {
         let reader_self = &*rb_self;
 
@@ -1470,6 +1479,7 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     reader_class.define_method("metadata", magnus::method!(Reader::metadata, 0))?;
     reader_class.define_method("close", magnus::method!(Reader::close, 0))?;
     reader_class.define_method("closed", magnus::method!(Reader::closed, 0))?;
+    reader_class.define_method("inspect", magnus::method!(Reader::inspect, 0))?;
     reader_class.define_method("each", magnus::method!(Reader::each, -1))?;
 
     // Include Enumerable module
