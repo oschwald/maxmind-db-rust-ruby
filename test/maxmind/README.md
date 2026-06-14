@@ -25,6 +25,10 @@ The tests have been adapted to work with the maxmind-db-rust implementation:
 - Adjusted file paths to match our test data location
 - Minor adaptations for API compatibility
 
+Additional focused compatibility checks live in `test/compatibility_audit_test.rb`.
+They cover supported official mode constants, path and buffer mode parity, and
+loading this extension after a `MaxMind::DB` class already exists.
+
 ## Syncing with Upstream
 
 To update these tests from the official repository:
