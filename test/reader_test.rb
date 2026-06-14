@@ -11,6 +11,7 @@ class ReaderTest < Minitest::Test
 
   def test_mode_constants
     assert_equal :MODE_AUTO, MaxMind::DB::Rust::MODE_AUTO
+    assert_equal :MODE_FILE, MaxMind::DB::Rust::MODE_FILE
     assert_equal :MODE_MEMORY, MaxMind::DB::Rust::MODE_MEMORY
     assert_equal :MODE_MMAP, MaxMind::DB::Rust::MODE_MMAP
   end
@@ -40,6 +41,16 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: MaxMind::DB::Rust::MODE_MMAP)
+
+    refute_nil reader
+    refute reader.closed
+    reader.close
+  end
+
+  def test_open_database_with_mode_file
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: MaxMind::DB::Rust::MODE_FILE)
 
     refute_nil reader
     refute reader.closed

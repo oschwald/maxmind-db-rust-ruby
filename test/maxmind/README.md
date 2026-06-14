@@ -22,7 +22,6 @@ The tests have been adapted to work with the maxmind-db-rust implementation:
 
 - Changed `require 'maxmind/db'` to `require 'maxmind/db/rust'`
 - Changed `MaxMind::DB` to `MaxMind::DB::Rust`
-- Removed `MODE_FILE` tests (not supported, use `MODE_MMAP` instead)
 - Adjusted file paths to match our test data location
 - Minor adaptations for API compatibility
 

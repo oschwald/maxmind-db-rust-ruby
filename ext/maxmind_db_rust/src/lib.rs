@@ -521,9 +521,11 @@ impl Reader {
         let mode_str = mode.name()?;
         let mode_str: &str = &mode_str;
 
-        // Determine actual mode to use
+        // Determine actual mode to use. MODE_FILE is the official gem's file
+        // backed mode; use the existing mmap reader for the same path-backed
+        // behavior.
         let actual_mode = match mode_str {
-            "MODE_AUTO" | "MODE_MMAP" => "MMAP",
+            "MODE_AUTO" | "MODE_FILE" | "MODE_MMAP" => "MMAP",
             "MODE_MEMORY" => "MEMORY",
             _ => {
                 return Err(Error::new(
@@ -1135,6 +1137,7 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
 
     // Define MODE constants
     rust.const_set("MODE_AUTO", ruby.to_symbol("MODE_AUTO"))?;
+    rust.const_set("MODE_FILE", ruby.to_symbol("MODE_FILE"))?;
     rust.const_set("MODE_MEMORY", ruby.to_symbol("MODE_MEMORY"))?;
     rust.const_set("MODE_MMAP", ruby.to_symbol("MODE_MMAP"))?;
 

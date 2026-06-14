@@ -9,7 +9,6 @@
 # Modifications for maxmind-db-rust:
 # - Changed require 'maxmind/db' to require 'maxmind/db/rust'
 # - Changed MaxMind::DB to MaxMind::DB::Rust
-# - Changed MODE_FILE to MODE_MMAP (MODE_FILE not supported)
 # - Updated test data paths to test/data/MaxMind-DB/test-data/
 # - Removed MODE_PARAM_IS_BUFFER tests (not supported)
 # - Removed test_reader_inspect (not implemented)
@@ -23,6 +22,7 @@ require_relative 'mmdb_util'
 class MaxMindReaderTest < Minitest::Test
   def test_reader
     modes = [
+      MaxMind::DB::Rust::MODE_FILE,
       MaxMind::DB::Rust::MODE_MMAP,
       MaxMind::DB::Rust::MODE_MEMORY,
     ]

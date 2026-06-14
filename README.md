@@ -13,7 +13,7 @@ It keeps the API close to the official `maxmind-db` gem while adding Rust-backed
 - Rust implementation focused on fast lookups
 - API modeled after the official `maxmind-db` gem
 - Thread-safe lookups
-- Supports MMAP and in-memory modes
+- Supports file-backed, MMAP, and in-memory modes
 - Includes network iteration support
 - Accepts both `String` and `IPAddr` inputs
 
@@ -112,6 +112,12 @@ reader = MaxMind::DB::Rust::Reader.new(
   mode: MaxMind::DB::Rust::MODE_MMAP
 )
 
+# MODE_FILE: Official-gem compatibility alias for path-backed MMAP
+reader = MaxMind::DB::Rust::Reader.new(
+  'GeoIP2-City.mmdb',
+  mode: MaxMind::DB::Rust::MODE_FILE
+)
+
 # MODE_MEMORY: Load entire database into memory
 reader = MaxMind::DB::Rust::Reader.new(
   'GeoIP2-City.mmdb',
@@ -184,7 +190,7 @@ Create a new Reader instance.
 
 - `database_path` (String): Path to the MaxMind DB file
 - `options` (Hash): Optional configuration
-  - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_MEMORY`, or `:MODE_MMAP`
+  - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_FILE`, `:MODE_MEMORY`, or `:MODE_MMAP`
 
 **Returns:** Reader instance
 
@@ -269,6 +275,7 @@ Metadata attributes:
 ### Constants
 
 - `MaxMind::DB::Rust::MODE_AUTO` - Automatically choose the best mode (uses MMAP)
+- `MaxMind::DB::Rust::MODE_FILE` - Official-gem compatibility alias for path-backed MMAP
 - `MaxMind::DB::Rust::MODE_MEMORY` - Load entire database into memory
 - `MaxMind::DB::Rust::MODE_MMAP` - Use memory-mapped file I/O (recommended)
 
@@ -283,7 +290,7 @@ Metadata attributes:
 | Implementation   | Pure Ruby             | Rust with Ruby bindings                    |
 | Performance      | Baseline              | Faster lookup throughput in our benchmarks |
 | API              | MaxMind::DB           | MaxMind::DB::Rust                          |
-| MODE_FILE        | ✓                     | ✗                                          |
+| MODE_FILE        | ✓                     | ✓                                          |
 | MODE_MEMORY      | ✓                     | ✓                                          |
 | MODE_AUTO        | ✓                     | ✓                                          |
 | MODE_MMAP        | ✗                     | ✓                                          |
