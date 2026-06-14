@@ -7,6 +7,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # Build native gems for each platform
   build-native-gems:
@@ -25,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          persist-credentials: false
           submodules: recursive
 
       - name: Set up Ruby
@@ -53,17 +57,27 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          persist-credentials: false
           submodules: recursive
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1
         with:
           ruby-version: "4.0"
-          bundler-cache: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Build source gem
         run: |
           gem build maxmind-db-rust.gemspec
+
+      - name: Smoke test source gem
+        run: |
+          install_dir="$(mktemp -d)"
+          gcc_include="$(dirname "$(dirname "$(command -v gcc)")")/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion | cut -d. -f1)/include"
+          BINDGEN_EXTRA_CLANG_ARGS="-I${gcc_include}" gem install ./*.gem --install-dir "$install_dir" --bindir "$install_dir/bin" --no-document
+          GEM_HOME="$install_dir" GEM_PATH="$install_dir" ruby -e 'require "maxmind/db/rust"; puts MaxMind::DB::Rust::Reader'
 
       - name: Upload source gem artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -82,10 +96,12 @@ jobs:
 
     permissions:
       id-token: write # Required for trusted publishing
-      contents: write # Required for tag push
+      contents: read
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1
@@ -109,6 +125,7 @@ jobs:
 
       - name: Publish gems to RubyGems.org
         run: |
+          set -euo pipefail
           for gem in all-gems/*.gem; do
             echo "Publishing $gem"
             gem push "$gem"
