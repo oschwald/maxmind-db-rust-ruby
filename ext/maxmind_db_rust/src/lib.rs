@@ -544,6 +544,10 @@ impl Metadata {
     }
 }
 
+// SAFETY: Metadata stores only owned Rust values copied out of the database
+// metadata. It contains no Ruby VALUE handles or borrowed database/source data,
+// so moving it between Ruby-managed threads cannot invalidate GC or lifetime
+// assumptions.
 unsafe impl Send for Metadata {}
 
 /// A Ruby wrapper around the MaxMind DB reader
@@ -937,6 +941,11 @@ impl Reader {
     }
 }
 
+// SAFETY: Reader does not store Ruby VALUE handles. The database source is
+// owned by ReaderSource and is read-only after construction; close atomically
+// swaps the shared source to None. The path cache contains only Rust-owned path
+// elements behind a Mutex. All Ruby object access happens inside method calls
+// while the Ruby VM is active.
 unsafe impl Send for Reader {}
 
 /// Helper function to create a Reader from a ReaderSource
