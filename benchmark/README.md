@@ -125,3 +125,27 @@ Cases unsupported by either ref are reported as unsupported and are skipped for
 regression threshold checks. The summary table reports median throughput for the
 comparison delta and includes each ref's minimum sample throughput as a quick
 stability check.
+
+## allocation_counts.rb
+
+Measures Ruby object allocations for this Rust implementation using
+`GC.stat(:total_allocated_objects)`. This is useful for spotting allocation
+regressions that might not show up clearly in throughput benchmarks.
+
+### Usage
+
+```bash
+ruby benchmark/allocation_counts.rb \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --iterations 1000
+```
+
+### Useful Options
+
+- `--cases get,get_path,get_many` - Select allocation benchmark cases.
+- `--samples 5` - Number of measured samples per case.
+- `--warmup-iterations 100` - Warmup operations before measuring.
+- `--batch-size 100` - Batch size for `get_many`.
+- `--ip 81.2.69.142` - IP address used for lookups.
+- `--path country.iso_code` - Path used for `get_path`.
+- `--json-output benchmark/allocations.json` - Save raw measurements.
