@@ -210,13 +210,13 @@ reader.close
 
 ### `MaxMind::DB::Rust::Reader`
 
-#### `new(database_path, options = {})`
+#### `new(database, options = {})`
 
 Create a new Reader instance.
 
 **Parameters:**
 
-- `database_path` (String): Path to the MaxMind DB file, or database bytes when using `:MODE_PARAM_IS_BUFFER`
+- `database` (String): Path to the MaxMind DB file, or database bytes when using `:MODE_PARAM_IS_BUFFER`
 - `options` (Hash): Optional configuration
   - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_FILE`, `:MODE_MEMORY`, `:MODE_MMAP`, or `:MODE_PARAM_IS_BUFFER`
 

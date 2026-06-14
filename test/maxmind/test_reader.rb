@@ -16,9 +16,10 @@
 
 require 'maxmind/db/rust'
 require 'minitest/autorun'
-require_relative 'mmdb_util'
 
 class MaxMindReaderTest < Minitest::Test
+  TEST_DATA_DIR = File.expand_path('../data/MaxMind-DB/test-data', __dir__)
+
   def test_reader
     modes = [
       MaxMind::DB::Rust::MODE_FILE,
@@ -31,7 +32,7 @@ class MaxMindReaderTest < Minitest::Test
       record_sizes.each do |record_size|
         ip_versions = [4, 6]
         ip_versions.each do |ip_version|
-          filename = "test/data/MaxMind-DB/test-data/MaxMind-DB-test-ipv#{ip_version}-#{record_size}.mmdb"
+          filename = data_path("MaxMind-DB-test-ipv#{ip_version}-#{record_size}.mmdb")
           reader = MaxMind::DB::Rust::Reader.new(filename, mode: mode)
           check_metadata(reader, ip_version, record_size)
           if ip_version == 4
@@ -52,7 +53,7 @@ class MaxMindReaderTest < Minitest::Test
     ]
 
     modes.each do |mode|
-      filename = 'test/data/MaxMind-DB/test-data/MaxMind-DB-test-ipv4-24.mmdb'
+      filename = data_path('MaxMind-DB-test-ipv4-24.mmdb')
       reader = MaxMind::DB::Rust::Reader.new(filename, mode: mode)
 
       assert_instance_of(String, reader.inspect)
@@ -153,7 +154,7 @@ class MaxMindReaderTest < Minitest::Test
     }]
 
     tests.each do |test|
-      reader = MaxMind::DB::Rust::Reader.new("test/data/MaxMind-DB/test-data/#{test['file_name']}")
+      reader = MaxMind::DB::Rust::Reader.new(data_path(test['file_name']))
       record, prefix_length = reader.get_with_prefix_length(test['ip'])
 
       assert_equal(test['expected_prefix_length'], prefix_length,
@@ -172,7 +173,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_decoder
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     record = reader.get('::1.1.1.0')
 
@@ -201,7 +202,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_metadata_pointers
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-metadata-pointers.mmdb'
+      data_path('MaxMind-DB-test-metadata-pointers.mmdb')
     )
 
     assert_equal('Lots of pointers in metadata', reader.metadata.database_type)
@@ -210,7 +211,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_no_ipv4_search_tree
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-no-ipv4-search-tree.mmdb'
+      data_path('MaxMind-DB-no-ipv4-search-tree.mmdb')
     )
 
     # Both "::0/64" and "::/64" are valid representations of the same IPv6 network
@@ -221,7 +222,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_ipv6_address_in_ipv4_database
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-ipv4-24.mmdb'
+      data_path('MaxMind-DB-test-ipv4-24.mmdb')
     )
     e = assert_raises ArgumentError do
       reader.get('2001::')
@@ -235,7 +236,7 @@ class MaxMindReaderTest < Minitest::Test
   end
 
   def test_bad_ip_parameter
-    reader = MaxMind::DB::Rust::Reader.new('test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb')
+    reader = MaxMind::DB::Rust::Reader.new(data_path('GeoIP2-City-Test.mmdb'))
     e = assert_raises ArgumentError do
       reader.get(Object.new)
     end
@@ -246,7 +247,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_broken_database
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb'
+      data_path('GeoIP2-City-Test-Broken-Double-Format.mmdb')
     )
     e = assert_raises MaxMind::DB::Rust::InvalidDatabaseError do
       reader.get('2001:220::')
@@ -260,7 +261,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_ip_validation
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     e = assert_raises ArgumentError do
       reader.get('not_ip')
@@ -299,7 +300,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_too_many_get_args
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     e = assert_raises ArgumentError do
       reader.get('1.1.1.1', 'blah')
@@ -310,7 +311,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_no_get_args
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     e = assert_raises ArgumentError do
       reader.get
@@ -321,7 +322,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_metadata_args
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     e = assert_raises ArgumentError do
       reader.metadata('hi')
@@ -332,7 +333,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_metadata_unknown_attribute
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     assert_raises NoMethodError do
       reader.metadata.what
@@ -342,14 +343,14 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_close
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     reader.close
   end
 
   def test_double_close
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     reader.close
     reader.close
@@ -357,7 +358,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_closed_get
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     reader.close
     e = assert_raises RuntimeError do
@@ -368,7 +369,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_closed_metadata
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/MaxMind-DB-test-decoder.mmdb'
+      data_path('MaxMind-DB-test-decoder.mmdb')
     )
     reader.close
 
@@ -381,7 +382,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_threads
     reader = MaxMind::DB::Rust::Reader.new(
-      'test/data/MaxMind-DB/test-data/GeoIP2-Domain-Test.mmdb'
+      data_path('GeoIP2-Domain-Test.mmdb')
     )
 
     num_threads = 16
@@ -510,5 +511,9 @@ class MaxMindReaderTest < Minitest::Test
         "#{ip} is not in #{filename}",
       )
     end
+  end
+
+  def data_path(filename)
+    File.join(TEST_DATA_DIR, filename)
   end
 end
