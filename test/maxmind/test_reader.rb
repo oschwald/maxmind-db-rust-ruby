@@ -10,7 +10,7 @@
 # - Changed require 'maxmind/db' to require 'maxmind/db/rust'
 # - Changed MaxMind::DB to MaxMind::DB::Rust
 # - Updated test data paths to test/data/MaxMind-DB/test-data/
-# - Removed MODE_PARAM_IS_BUFFER tests (not supported)
+# - Namespaced MaxMind::DB APIs under MaxMind::DB::Rust
 # - Removed test_reader_inspect (not implemented)
 # - Updated error messages to match Rust implementation
 # - Removed internal method tests (read_node)

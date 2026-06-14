@@ -14,6 +14,7 @@ class ReaderTest < Minitest::Test
     assert_equal :MODE_FILE, MaxMind::DB::Rust::MODE_FILE
     assert_equal :MODE_MEMORY, MaxMind::DB::Rust::MODE_MEMORY
     assert_equal :MODE_MMAP, MaxMind::DB::Rust::MODE_MMAP
+    assert_equal :MODE_PARAM_IS_BUFFER, MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER
   end
 
   def test_invalid_database_error_exists
@@ -64,6 +65,30 @@ class ReaderTest < Minitest::Test
 
     refute_nil reader
     reader.close
+  end
+
+  def test_open_database_with_mode_param_is_buffer
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    buffer = File.binread(test_db_path)
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+    path_reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    refute_nil reader
+    assert_equal path_reader.get('81.2.69.142'), reader.get('81.2.69.142')
+
+    path_reader.close
+    reader.close
+  end
+
+  def test_invalid_buffer_database
+    error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) do
+      MaxMind::DB::Rust::Reader.new(
+        'not a database',
+        mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER,
+      )
+    end
+    assert_match(/valid MaxMind DB file/, error.message)
   end
 
   def test_open_database_default_mode

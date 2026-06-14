@@ -66,7 +66,7 @@ module MaxMind
       # - Reader class
       # - Metadata class
       # - InvalidDatabaseError exception
-      # - MODE_AUTO, MODE_FILE, MODE_MEMORY, MODE_MMAP constants
+      # - MODE_AUTO, MODE_FILE, MODE_MEMORY, MODE_MMAP, MODE_PARAM_IS_BUFFER constants
     end
   else
     # Official gem not loaded - define DB as a module
@@ -128,7 +128,7 @@ module MaxMind
         # - Reader class
         # - Metadata class
         # - InvalidDatabaseError exception
-        # - MODE_AUTO, MODE_FILE, MODE_MEMORY, MODE_MMAP constants
+        # - MODE_AUTO, MODE_FILE, MODE_MEMORY, MODE_MMAP, MODE_PARAM_IS_BUFFER constants
       end
     end
   end

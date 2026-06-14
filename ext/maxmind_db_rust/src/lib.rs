@@ -323,6 +323,7 @@ enum ReaderSource {
 enum OpenMode {
     Mmap,
     Memory,
+    Buffer,
 }
 
 impl OpenMode {
@@ -333,6 +334,7 @@ impl OpenMode {
             // existing mmap reader for the same path-backed behavior.
             "MODE_AUTO" | "MODE_FILE" | "MODE_MMAP" => Ok(Self::Mmap),
             "MODE_MEMORY" => Ok(Self::Memory),
+            "MODE_PARAM_IS_BUFFER" => Ok(Self::Buffer),
             _ => Err(Error::new(
                 ruby.exception_arg_error(),
                 format!("Unsupported mode: {}", mode_name),
@@ -550,7 +552,7 @@ impl Reader {
     fn new(args: &[Value]) -> Result<Self, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let args = scan_args::<(String,), (), (), (), _, ()>(args)?;
+        let args = scan_args::<(Value,), (), (), (), _, ()>(args)?;
         let (database,) = args.required;
         let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(args.keywords, &[], &["mode"])?;
         let (mode,) = kw.optional;
@@ -562,8 +564,9 @@ impl Reader {
 
         // Open database with appropriate mode
         match open_mode {
-            OpenMode::Mmap => open_database_mmap(&database),
-            OpenMode::Memory => open_database_memory(&database),
+            OpenMode::Mmap => open_database_mmap(&database_path(database)?),
+            OpenMode::Memory => open_database_memory(&database_path(database)?),
+            OpenMode::Buffer => open_database_buffer(database_buffer(database)?),
         }
     }
 
@@ -1108,6 +1111,17 @@ fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
     )
 }
 
+fn database_path(database: Value) -> Result<String, Error> {
+    RString::try_convert(database)?.to_string()
+}
+
+fn database_buffer(database: Value) -> Result<Vec<u8>, Error> {
+    let string = RString::try_convert(database)?;
+    // SAFETY: the slice is copied into an owned Vec before Ruby can mutate or
+    // free the string, and the reader only ever sees the owned bytes.
+    Ok(unsafe { string.as_slice() }.to_vec())
+}
+
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
 fn open_database_mmap(path: &str) -> Result<Reader, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
@@ -1146,16 +1160,25 @@ fn open_database_memory(path: &str) -> Result<Reader, Error> {
         )
     })?;
 
-    let reader = MaxMindReader::from_source(buffer).map_err(|_| {
-        Error::new(
-            ExceptionClass::from_value(invalid_database_error().as_value())
-                .expect("InvalidDatabaseError should convert to ExceptionClass"),
-            format!(
-                "Error opening database file ({}). Is this a valid MaxMind DB file?",
-                path
-            ),
-        )
-    })?;
+    reader_from_buffer(
+        buffer,
+        format!(
+            "Error opening database file ({}). Is this a valid MaxMind DB file?",
+            path
+        ),
+    )
+}
+
+fn open_database_buffer(buffer: Vec<u8>) -> Result<Reader, Error> {
+    reader_from_buffer(
+        buffer,
+        "Error opening database from buffer. Is this a valid MaxMind DB file?".to_owned(),
+    )
+}
+
+fn reader_from_buffer(buffer: Vec<u8>, invalid_message: String) -> Result<Reader, Error> {
+    let reader = MaxMindReader::from_source(buffer)
+        .map_err(|_| invalid_database_exception(invalid_message.as_str()))?;
 
     Ok(create_reader(ReaderSource::Memory(reader)))
 }
@@ -1332,6 +1355,10 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     rust.const_set("MODE_FILE", ruby.to_symbol("MODE_FILE"))?;
     rust.const_set("MODE_MEMORY", ruby.to_symbol("MODE_MEMORY"))?;
     rust.const_set("MODE_MMAP", ruby.to_symbol("MODE_MMAP"))?;
+    rust.const_set(
+        "MODE_PARAM_IS_BUFFER",
+        ruby.to_symbol("MODE_PARAM_IS_BUFFER"),
+    )?;
 
     Ok(())
 }

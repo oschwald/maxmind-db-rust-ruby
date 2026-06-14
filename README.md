@@ -13,7 +13,7 @@ It keeps the API close to the official `maxmind-db` gem while adding Rust-backed
 - Rust implementation focused on fast lookups
 - API modeled after the official `maxmind-db` gem
 - Thread-safe lookups
-- Supports file-backed, MMAP, and in-memory modes
+- Supports file-backed, MMAP, in-memory, and buffer-backed modes
 - Includes network iteration support
 - Accepts both `String` and `IPAddr` inputs
 - Includes selective path lookup and batch lookup extensions
@@ -144,6 +144,13 @@ reader = MaxMind::DB::Rust::Reader.new(
   'GeoIP2-City.mmdb',
   mode: MaxMind::DB::Rust::MODE_MEMORY
 )
+
+# MODE_PARAM_IS_BUFFER: Read from a String containing database bytes
+buffer = File.binread('GeoIP2-City.mmdb')
+reader = MaxMind::DB::Rust::Reader.new(
+  buffer,
+  mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER
+)
 ```
 
 ### Accessing Metadata
@@ -209,9 +216,9 @@ Create a new Reader instance.
 
 **Parameters:**
 
-- `database_path` (String): Path to the MaxMind DB file
+- `database_path` (String): Path to the MaxMind DB file, or database bytes when using `:MODE_PARAM_IS_BUFFER`
 - `options` (Hash): Optional configuration
-  - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_FILE`, `:MODE_MEMORY`, or `:MODE_MMAP`
+  - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_FILE`, `:MODE_MEMORY`, `:MODE_MMAP`, or `:MODE_PARAM_IS_BUFFER`
 
 **Returns:** Reader instance
 
@@ -331,6 +338,7 @@ Metadata attributes:
 - `MaxMind::DB::Rust::MODE_FILE` - Official-gem compatibility alias for path-backed MMAP
 - `MaxMind::DB::Rust::MODE_MEMORY` - Load entire database into memory
 - `MaxMind::DB::Rust::MODE_MMAP` - Use memory-mapped file I/O (recommended)
+- `MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER` - Read database bytes from a Ruby String
 
 ### Exceptions
 
@@ -338,17 +346,18 @@ Metadata attributes:
 
 ## Comparison with Official Gem
 
-| Feature          | maxmind-db (official) | maxmind-db-rust (this gem)                 |
-| ---------------- | --------------------- | ------------------------------------------ |
-| Implementation   | Pure Ruby             | Rust with Ruby bindings                    |
-| Performance      | Baseline              | Faster lookup throughput in our benchmarks |
-| API              | MaxMind::DB           | MaxMind::DB::Rust                          |
-| MODE_FILE        | ✓                     | ✓                                          |
-| MODE_MEMORY      | ✓                     | ✓                                          |
-| MODE_AUTO        | ✓                     | ✓                                          |
-| MODE_MMAP        | ✗                     | ✓                                          |
-| Iterator support | ✗                     | ✓                                          |
-| Thread-safe      | ✓                     | ✓                                          |
+| Feature              | maxmind-db (official) | maxmind-db-rust (this gem)                 |
+| -------------------- | --------------------- | ------------------------------------------ |
+| Implementation       | Pure Ruby             | Rust with Ruby bindings                    |
+| Performance          | Baseline              | Faster lookup throughput in our benchmarks |
+| API                  | MaxMind::DB           | MaxMind::DB::Rust                          |
+| MODE_FILE            | ✓                     | ✓                                          |
+| MODE_MEMORY          | ✓                     | ✓                                          |
+| MODE_AUTO            | ✓                     | ✓                                          |
+| MODE_PARAM_IS_BUFFER | ✓                     | ✓                                          |
+| MODE_MMAP            | ✗                     | ✓                                          |
+| Iterator support     | ✗                     | ✓                                          |
+| Thread-safe          | ✓                     | ✓                                          |
 
 ## Performance
 
