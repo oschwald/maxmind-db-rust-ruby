@@ -13,9 +13,10 @@ It keeps the API close to the official `maxmind-db` gem while adding Rust-backed
 - Rust implementation focused on fast lookups
 - API modeled after the official `maxmind-db` gem
 - Thread-safe lookups
-- Supports MMAP and in-memory modes
+- Supports file-backed, MMAP, in-memory, and buffer-backed modes
 - Includes network iteration support
 - Accepts both `String` and `IPAddr` inputs
+- Includes selective path lookup and batch lookup extensions
 
 ## Installation
 
@@ -81,6 +82,26 @@ puts "Prefix length: #{prefix_length}"
 reader.close
 ```
 
+### Selective and Batch Lookups
+
+```ruby
+require 'maxmind/db/rust'
+
+reader = MaxMind::DB::Rust::Reader.new('GeoIP2-City.mmdb')
+
+# Decode one field without materializing the full record.
+iso_code = reader.get_path('8.8.8.8', ['country', 'iso_code'])
+
+# Batch full-record lookups.
+ips = ['8.8.8.8', '1.1.1.1', '208.67.222.222']
+records = reader.get_many(ips)
+
+# Batch one-field lookups.
+iso_codes = reader.get_many_path(ips, ['country', 'iso_code'])
+
+reader.close
+```
+
 ### Using IPAddr Objects
 
 ```ruby
@@ -112,10 +133,23 @@ reader = MaxMind::DB::Rust::Reader.new(
   mode: MaxMind::DB::Rust::MODE_MMAP
 )
 
+# MODE_FILE: Official-gem compatibility alias for path-backed MMAP
+reader = MaxMind::DB::Rust::Reader.new(
+  'GeoIP2-City.mmdb',
+  mode: MaxMind::DB::Rust::MODE_FILE
+)
+
 # MODE_MEMORY: Load entire database into memory
 reader = MaxMind::DB::Rust::Reader.new(
   'GeoIP2-City.mmdb',
   mode: MaxMind::DB::Rust::MODE_MEMORY
+)
+
+# MODE_PARAM_IS_BUFFER: Read from a String containing database bytes
+buffer = File.binread('GeoIP2-City.mmdb')
+reader = MaxMind::DB::Rust::Reader.new(
+  buffer,
+  mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER
 )
 ```
 
@@ -176,15 +210,15 @@ reader.close
 
 ### `MaxMind::DB::Rust::Reader`
 
-#### `new(database_path, options = {})`
+#### `new(database, options = {})`
 
 Create a new Reader instance.
 
 **Parameters:**
 
-- `database_path` (String): Path to the MaxMind DB file
+- `database` (String): Path to the MaxMind DB file, or database bytes when using `:MODE_PARAM_IS_BUFFER`
 - `options` (Hash): Optional configuration
-  - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_MEMORY`, or `:MODE_MMAP`
+  - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_FILE`, `:MODE_MEMORY`, `:MODE_MMAP`, or `:MODE_PARAM_IS_BUFFER`
 
 **Returns:** Reader instance
 
@@ -208,6 +242,17 @@ Look up an IP address in the database.
 - `ArgumentError`: If looking up IPv6 in an IPv4-only database
 - `MaxMind::DB::Rust::InvalidDatabaseError`: If the database is corrupt
 
+#### `get_path(ip_address, path)`
+
+Look up an IP address and return only the value at `path`.
+
+**Parameters:**
+
+- `ip_address` (String or IPAddr): The IP address to look up
+- `path` (Array): String map keys and Integer array indexes. Negative indexes count from the end.
+
+**Returns:** The value at the path, or `nil` if the record or path is not found
+
 #### `get_with_prefix_length(ip_address)`
 
 Look up an IP address and return the prefix length.
@@ -217,6 +262,27 @@ Look up an IP address and return the prefix length.
 - `ip_address` (String or IPAddr): The IP address to look up
 
 **Returns:** Array `[record, prefix_length]` where record is a Hash or `nil`
+
+#### `get_many(ip_addresses)`
+
+Look up multiple IP addresses.
+
+**Parameters:**
+
+- `ip_addresses` (Array or Enumerable): IP address strings or IPAddr objects
+
+**Returns:** Array of record values in input order
+
+#### `get_many_path(ip_addresses, path)`
+
+Look up one path for multiple IP addresses.
+
+**Parameters:**
+
+- `ip_addresses` (Array or Enumerable): IP address strings or IPAddr objects
+- `path` (Array): String map keys and Integer array indexes
+
+**Returns:** Array of path values in input order
 
 #### `metadata()`
 
@@ -269,8 +335,10 @@ Metadata attributes:
 ### Constants
 
 - `MaxMind::DB::Rust::MODE_AUTO` - Automatically choose the best mode (uses MMAP)
+- `MaxMind::DB::Rust::MODE_FILE` - Official-gem compatibility alias for path-backed MMAP
 - `MaxMind::DB::Rust::MODE_MEMORY` - Load entire database into memory
 - `MaxMind::DB::Rust::MODE_MMAP` - Use memory-mapped file I/O (recommended)
+- `MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER` - Read database bytes from a Ruby String
 
 ### Exceptions
 
@@ -278,26 +346,26 @@ Metadata attributes:
 
 ## Comparison with Official Gem
 
-| Feature          | maxmind-db (official) | maxmind-db-rust (this gem)                 |
-| ---------------- | --------------------- | ------------------------------------------ |
-| Implementation   | Pure Ruby             | Rust with Ruby bindings                    |
-| Performance      | Baseline              | Faster lookup throughput in our benchmarks |
-| API              | MaxMind::DB           | MaxMind::DB::Rust                          |
-| MODE_FILE        | ✓                     | ✗                                          |
-| MODE_MEMORY      | ✓                     | ✓                                          |
-| MODE_AUTO        | ✓                     | ✓                                          |
-| MODE_MMAP        | ✗                     | ✓                                          |
-| Iterator support | ✗                     | ✓                                          |
-| Thread-safe      | ✓                     | ✓                                          |
+| Feature              | maxmind-db (official) | maxmind-db-rust (this gem)                 |
+| -------------------- | --------------------- | ------------------------------------------ |
+| Implementation       | Pure Ruby             | Rust with Ruby bindings                    |
+| Performance          | Baseline              | Faster lookup throughput in our benchmarks |
+| API                  | MaxMind::DB           | MaxMind::DB::Rust                          |
+| MODE_FILE            | ✓                     | ✓                                          |
+| MODE_MEMORY          | ✓                     | ✓                                          |
+| MODE_AUTO            | ✓                     | ✓                                          |
+| MODE_PARAM_IS_BUFFER | ✓                     | ✓                                          |
+| MODE_MMAP            | ✗                     | ✓                                          |
+| Iterator support     | ✗                     | ✓                                          |
+| Thread-safe          | ✓                     | ✓                                          |
 
 ## Performance
 
 Lookup performance depends on hardware, Ruby version, database, and workload.
 
 - In this project’s random-lookup benchmarks, this gem is consistently faster than the official Ruby implementation.
-- On `/var/lib/GeoIP/GeoIP2-City.mmdb` in this environment, random lookup throughput was about `47x` higher than the official gem.
 - `MODE_MMAP` and `MODE_MEMORY` both perform well; which is faster can vary by environment.
-- For reproducible numbers on your own data, run `benchmark/compare_lookups.rb` against your database.
+- For current, reproducible numbers on your own data and Ruby version, run `benchmark/compare_lookups.rb` against your database.
 - Safe for concurrent lookups across threads.
 
 ## Development

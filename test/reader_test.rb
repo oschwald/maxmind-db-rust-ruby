@@ -11,8 +11,10 @@ class ReaderTest < Minitest::Test
 
   def test_mode_constants
     assert_equal :MODE_AUTO, MaxMind::DB::Rust::MODE_AUTO
+    assert_equal :MODE_FILE, MaxMind::DB::Rust::MODE_FILE
     assert_equal :MODE_MEMORY, MaxMind::DB::Rust::MODE_MEMORY
     assert_equal :MODE_MMAP, MaxMind::DB::Rust::MODE_MMAP
+    assert_equal :MODE_PARAM_IS_BUFFER, MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER
   end
 
   def test_invalid_database_error_exists
@@ -46,6 +48,16 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_open_database_with_mode_file
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: MaxMind::DB::Rust::MODE_FILE)
+
+    refute_nil reader
+    refute reader.closed
+    reader.close
+  end
+
   def test_open_database_with_mode_auto
     skip 'Test database not found' unless File.exist?(test_db_path)
 
@@ -55,12 +67,67 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_open_database_with_mode_param_is_buffer
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    buffer = File.binread(test_db_path)
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+    path_reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    refute_nil reader
+    assert_equal path_reader.get('81.2.69.142'), reader.get('81.2.69.142')
+
+    path_reader.close
+    reader.close
+  end
+
+  def test_invalid_buffer_database
+    error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) do
+      MaxMind::DB::Rust::Reader.new(
+        'not a database',
+        mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER,
+      )
+    end
+    assert_match(/valid MaxMind DB file/, error.message)
+  end
+
   def test_open_database_default_mode
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
 
     refute_nil reader
+    reader.close
+  end
+
+  def test_reader_inspect
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    modes = [
+      MaxMind::DB::Rust::MODE_MMAP,
+      MaxMind::DB::Rust::MODE_MEMORY,
+    ]
+
+    modes.each do |mode|
+      reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: mode)
+
+      assert_match(/\A#<MaxMind::DB::Rust::Reader:0x[0-9a-f]+ @closed=false @ip_version=6>\z/, reader.inspect)
+
+      reader.close
+
+      assert_match(/@closed=true/, reader.inspect)
+    end
+  end
+
+  def test_buffer_reader_inspect_does_not_include_buffer
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    buffer = File.binread(test_db_path)
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+
+    assert_match(/MaxMind::DB::Rust::Reader/, reader.inspect)
+    refute_includes reader.inspect, buffer
+
     reader.close
   end
 
@@ -81,10 +148,23 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
-    record = reader.get('1.1.1.1')
+    record = reader.get('81.2.69.142')
 
-    # The test database should have data
-    refute_nil record if reader.metadata.database_type.include?('Test')
+    refute_nil record
+    assert_equal 'GB', record.dig('country', 'iso_code')
+
+    reader.close
+  end
+
+  def test_get_rejects_empty_ip_address
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    error = assert_raises(ArgumentError) do
+      reader.get('')
+    end
+    assert_match(/does not appear to be/, error.message)
 
     reader.close
   end
@@ -94,6 +174,18 @@ class ReaderTest < Minitest::Test
 
     reader = MaxMind::DB::Rust::Reader.new(ipv6_test_db_path)
     _record = reader.get('::1')
+
+    reader.close
+  end
+
+  def test_get_with_prefix_length_ipv6_address
+    skip 'Test database not found' unless File.exist?(ipv6_test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv6_test_db_path)
+    record, prefix_length = reader.get_with_prefix_length('::1:ffff:ffff')
+
+    assert_equal({ 'ip' => '::1:ffff:ffff' }, record)
+    assert_equal 128, prefix_length
 
     reader.close
   end
@@ -235,6 +327,43 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_each_returns_enumerator_without_block
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    enumerator = reader.each
+
+    assert_kind_of Enumerator, enumerator
+
+    first_three = enumerator.take(3)
+
+    assert_equal 3, first_three.length
+    first_three.each do |network, data|
+      assert_kind_of IPAddr, network
+      assert(data.nil? || data.is_a?(Hash))
+    end
+
+    reader.close
+  end
+
+  def test_each_with_network_returns_enumerator_without_block
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    enumerator = reader.each('214.0.0.0/8')
+
+    assert_kind_of Enumerator, enumerator
+
+    networks = enumerator.take(3).map { |network, _data| network.to_s }
+
+    assert_predicate networks.length, :positive?
+    networks.each do |network|
+      assert network.start_with?('214.'), "Network #{network} should be in 214.0.0.0/8"
+    end
+
+    reader.close
+  end
+
   def test_iterator_within_ipv4_network_string
     skip 'Test database not found' unless File.exist?(test_db_path)
 
@@ -314,17 +443,16 @@ class ReaderTest < Minitest::Test
   end
 
   def test_iterator_within_ipv6_in_ipv4_database
-    skip 'Test database not found' unless File.exist?(test_db_path)
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
 
-    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
 
-    # Check if database is IPv4-only
-    if reader.metadata.ip_version == 4
-      # IPv6 network in IPv4 database should raise ArgumentError
-      assert_raises(ArgumentError) do
-        reader.each('2001::/16') do |_network, _data|
-          # Should not get here
-        end
+    assert_equal 4, reader.metadata.ip_version
+
+    # IPv6 network in IPv4 database should raise ArgumentError
+    assert_raises(ArgumentError) do
+      reader.each('2001::/16') do |_network, _data|
+        # Should not get here
       end
     end
 
@@ -398,13 +526,232 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_path
+    skip 'Test database not found' unless File.exist?(decoder_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(decoder_db_path)
+
+    assert_equal 'hello', reader.get_path('1.1.1.1', %w[map mapX utf8_stringX])
+    assert_equal 1, reader.get_path('1.1.1.1', ['array', 0])
+    assert_equal 3, reader.get_path('1.1.1.1', ['array', -1])
+    assert_nil reader.get_path('1.1.1.1', ['array', 3])
+    assert_nil reader.get_path('1.1.1.1', ['missing'])
+
+    reader.close
+  end
+
+  def test_get_path_empty_path_returns_record
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    assert_equal reader.get('81.2.69.142'), reader.get_path('81.2.69.142', [])
+
+    reader.close
+  end
+
+  def test_get_path_cache_uses_path_contents
+    skip 'Test database not found' unless File.exist?(decoder_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(decoder_db_path)
+    path = ['array', 0]
+
+    assert_equal 1, reader.get_path('1.1.1.1', path)
+    assert_equal 1, reader.get_path('1.1.1.1', path)
+
+    path[1] = 1
+
+    assert_equal 2, reader.get_path('1.1.1.1', path)
+
+    path[1] = -1
+
+    assert_equal 3, reader.get_path('1.1.1.1', path)
+
+    reader.close
+  end
+
+  def test_get_path_rejects_invalid_path
+    skip 'Test database not found' unless File.exist?(decoder_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(decoder_db_path)
+
+    error = assert_raises(ArgumentError) do
+      reader.get_path('1.1.1.1', 'array')
+    end
+    assert_match(/Path must be an Array/, error.message)
+
+    error = assert_raises(ArgumentError) do
+      reader.get_path('1.1.1.1', ['array', true])
+    end
+    assert_match(/Path elements must be Strings or Integers/, error.message)
+
+    reader.close
+  end
+
+  def test_get_many
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1', '81.2.69.142']
+
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(ips)
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(ips.each)
+
+    reader.close
+  end
+
+  def test_get_many_empty_array
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    assert_equal [], reader.get_many([])
+
+    reader.close
+  end
+
+  def test_get_many_streams_enumerables_without_materializing
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1', '81.2.69.142']
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      return enum_for(:each) unless block
+
+      ips.each(&block)
+    end
+    stream.define_singleton_method(:to_a) do
+      raise 'get_many should not materialize Enumerable inputs'
+    end
+
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(stream)
+    assert_equal ips.map { |ip| reader.get_path(ip, %w[country iso_code]) },
+                 reader.get_many_path(stream, %w[country iso_code])
+
+    reader.close
+  end
+
+  def test_get_many_path
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1', '81.2.69.142']
+    path = %w[country iso_code]
+
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips, path)
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips.each, path)
+
+    reader.close
+  end
+
+  def test_get_many_rejects_invalid_input
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    error = assert_raises(ArgumentError) do
+      reader.get_many('81.2.69.142')
+    end
+    assert_match(/ips must be an Array or Enumerable/, error.message)
+
+    reader.close
+  end
+
+  def test_shared_reader_concurrent_lookups_paths_batches_and_iteration
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', '2001:220::', '1.1.1.1']
+    path = %w[country iso_code]
+    start_queue = Queue.new
+
+    threads = Array.new(8) do |worker_id|
+      Thread.new do
+        start_queue.pop
+        operations = 0
+        100.times do |index|
+          ip = ips[(worker_id + index) % ips.length]
+          reader.get(ip)
+          reader.get_path(ip, path)
+          reader.get_many(ips)
+          reader.get_many_path(ips, path)
+          operations += 4
+
+          operations += reader.each.take(3).length if (index % 25).zero?
+        end
+        operations
+      end
+    end
+
+    threads.length.times { start_queue << true }
+    operations = threads.map(&:value)
+
+    assert_operator operations.sum, :>, 0
+
+    reader.close
+  end
+
+  def test_close_during_concurrent_lookups_reports_closed_reader
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    start_queue = Queue.new
+
+    threads = Array.new(4) do
+      Thread.new do
+        start_queue.pop
+        operations = 0
+        loop do
+          reader.get('81.2.69.142')
+          reader.get_path('81.2.69.142', %w[country iso_code])
+          operations += 2
+        rescue RuntimeError => e
+          raise unless e.message.include?('closed')
+
+          break operations
+        end
+      end
+    end
+
+    threads.length.times { start_queue << true }
+    sleep 0.01
+    reader.close
+    operations = threads.map(&:value)
+
+    assert reader.closed
+    assert_operator operations.sum, :>, 0
+  end
+
+  def test_each_after_close_reports_closed_reader
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    reader.close
+
+    error = assert_raises(RuntimeError) do
+      reader.each do |_network, _data|
+        # Should not get here
+      end
+    end
+    assert_match(/closed/, error.message)
+  end
+
   private
 
   def test_db_path
     File.join(TEST_DATA_DIR, 'GeoIP2-City-Test.mmdb')
   end
 
+  def decoder_db_path
+    File.join(TEST_DATA_DIR, 'MaxMind-DB-test-decoder.mmdb')
+  end
+
   def ipv6_test_db_path
     File.join(TEST_DATA_DIR, 'MaxMind-DB-test-ipv6-32.mmdb')
+  end
+
+  def ipv4_only_db_path
+    File.join(TEST_DATA_DIR, 'MaxMind-DB-test-ipv4-24.mmdb')
   end
 end

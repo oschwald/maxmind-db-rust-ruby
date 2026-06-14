@@ -93,3 +93,59 @@ Rust (Memory):          5714401.33 lookups/sec (33.23x)
 - The official gem is benchmarked in `MODE_FILE` (which uses mmap internally).
 - In this environment, using `/var/lib/GeoIP/GeoIP2-City.mmdb` with 50k random lookups, Rust measured about `47x` higher throughput than the official gem.
 - Use this script on your production-like database to get realistic numbers for your environment.
+
+## compare_refs.rb
+
+Compares lookup throughput between two git refs of this repository. The script
+creates temporary worktrees, builds each ref, runs deterministic lookup cases in
+subprocesses, and reports throughput deltas.
+
+### Usage
+
+```bash
+ruby benchmark/compare_refs.rb \
+  --baseline-ref main \
+  --candidate-ref HEAD \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --iterations 10000
+```
+
+### Useful Options
+
+- `--cases get,get_path,get_many,get_many_path` - Select benchmark cases.
+- `--samples 5` - Number of measured samples per case.
+- `--warmup-iterations 1000` - Warmup operations per case before measuring.
+- `--batch-size 100` - Batch size for `get_many` cases.
+- `--max-regression-pct 5` - Exit non-zero if any supported case's median throughput regresses by more than 5%.
+- `--json-output benchmark/results.json` - Save raw measurements for later review.
+- `--skip-build` - Reuse already-built worktrees.
+- `--keep-worktrees` - Keep temporary worktrees for inspection.
+
+Cases unsupported by either ref are reported as unsupported and are skipped for
+regression threshold checks. The summary table reports median throughput for the
+comparison delta and includes each ref's minimum sample throughput as a quick
+stability check.
+
+## allocation_counts.rb
+
+Measures Ruby object allocations for this Rust implementation using
+`GC.stat(:total_allocated_objects)`. This is useful for spotting allocation
+regressions that might not show up clearly in throughput benchmarks.
+
+### Usage
+
+```bash
+ruby benchmark/allocation_counts.rb \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --iterations 1000
+```
+
+### Useful Options
+
+- `--cases get,get_path,get_many` - Select allocation benchmark cases.
+- `--samples 5` - Number of measured samples per case.
+- `--warmup-iterations 100` - Warmup operations before measuring.
+- `--batch-size 100` - Batch size for `get_many`.
+- `--ip 81.2.69.142` - IP address used for lookups.
+- `--path country.iso_code` - Path used for `get_path`.
+- `--json-output benchmark/allocations.json` - Save raw measurements.
