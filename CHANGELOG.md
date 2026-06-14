@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-14
+
+### Added
+
+- Added `MODE_FILE` as an official-gem compatibility alias for path-backed
+  memory-mapped readers.
+- Added `MODE_PARAM_IS_BUFFER` for constructing readers from Ruby strings
+  containing database bytes.
+- Added `Reader#get_path` and `Reader#get_many_path` for selective path lookups.
+- Added `Reader#get_many` for batch lookups over arrays and enumerables.
+- Added Enumerator return support for `Reader#each` when called without a block.
+- Added `Reader#inspect` with closed state and database IP version.
+- Added benchmark tooling for comparing git refs and measuring Ruby object
+  allocations.
+- Added official gem parity tests, compatibility audit tests, bad data corpus
+  tests, and reader concurrency stress tests.
+
+### Changed
+
+- Upgraded the `maxminddb` crate to 0.28.1.
+- Improved IPv4 string lookup performance with a strict fast-path parser.
+- Streamed non-array `get_many` and `get_many_path` inputs instead of
+  materializing enumerables.
+- Cached parsed lookup paths per reader to reduce repeated path parsing.
+- Simplified reader open mode parsing and centralized lookup error handling.
+- Documented Rust extension safety invariants and `Send` requirements.
+
+### Fixed
+
+- Fixed source gem native extension installation so `require "maxmind/db/rust"`
+  works after installing the source gem.
+- Removed an unsafe reader iterator transmute.
+- Improved invalid database error construction consistency across reader open
+  and iteration paths.
+- Fixed dead test assertions and made adapted MaxMind tests independent of the
+  current working directory.
+
+### Security
+
+- Pinned GitHub Actions to commit SHAs.
+- Restricted workflow permissions and disabled persisted checkout credentials.
+- Added a zizmor workflow and source-gem install smoke test to release checks.
+
 ## [0.4.0] - 2026-04-25
 
 ### Performance
