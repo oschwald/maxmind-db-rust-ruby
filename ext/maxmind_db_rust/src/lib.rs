@@ -360,31 +360,25 @@ impl ReaderSource {
     }
 
     #[inline]
-    fn within(&self, network: IpNetwork) -> Result<ReaderWithin, MaxMindDbError> {
+    fn within(&self, network: IpNetwork) -> Result<ReaderWithin<'_>, MaxMindDbError> {
         match self {
-            ReaderSource::Mmap(reader) => {
-                let iter = reader.within(network, Default::default())?;
-                Ok(ReaderWithin::Mmap(unsafe {
-                    std::mem::transmute::<Within<'_, Mmap>, Within<'static, Mmap>>(iter)
-                }))
-            }
-            ReaderSource::Memory(reader) => {
-                let iter = reader.within(network, Default::default())?;
-                Ok(ReaderWithin::Memory(unsafe {
-                    std::mem::transmute::<Within<'_, Vec<u8>>, Within<'static, Vec<u8>>>(iter)
-                }))
-            }
+            ReaderSource::Mmap(reader) => Ok(ReaderWithin::Mmap(
+                reader.within(network, Default::default())?,
+            )),
+            ReaderSource::Memory(reader) => Ok(ReaderWithin::Memory(
+                reader.within(network, Default::default())?,
+            )),
         }
     }
 }
 
 /// Wrapper enum for Within iterators
-enum ReaderWithin {
-    Mmap(Within<'static, Mmap>),
-    Memory(Within<'static, Vec<u8>>),
+enum ReaderWithin<'reader> {
+    Mmap(Within<'reader, Mmap>),
+    Memory(Within<'reader, Vec<u8>>),
 }
 
-impl ReaderWithin {
+impl ReaderWithin<'_> {
     fn next(&mut self) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
         match self {
             ReaderWithin::Mmap(iter) => next_within_result(iter),
@@ -407,7 +401,7 @@ fn prefix_len_for_ip_network(ip: IpAddr, network: IpNetwork) -> usize {
 
 #[inline]
 fn next_within_result<S: AsRef<[u8]>>(
-    iter: &mut Within<'static, S>,
+    iter: &mut Within<'_, S>,
 ) -> Option<Result<(IpNetwork, RubyDecodedValue), MaxMindDbError>> {
     loop {
         match iter.next() {
