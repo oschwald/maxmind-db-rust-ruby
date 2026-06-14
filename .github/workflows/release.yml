@@ -23,24 +23,24 @@ jobs:
           - x64-mingw-ucrt
           - x86_64-linux-musl
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           submodules: recursive
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1
         with:
           ruby-version: "4.0"
 
       - name: Build native gem
-        uses: oxidize-rb/actions/cross-gem@v1
+        uses: oxidize-rb/actions/cross-gem@e5f9a49a7812a078584072f6e3f657ad247c8771 # v1
         id: cross-gem
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.2,3.3,3.4,4.0"
 
       - name: Upload gem artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gem-${{ matrix.platform }}
           path: ${{ steps.cross-gem.outputs.gem-path }}
@@ -51,12 +51,12 @@ jobs:
     name: Build source gem
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           submodules: recursive
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1
         with:
           ruby-version: "4.0"
           bundler-cache: true
@@ -66,7 +66,7 @@ jobs:
           gem build maxmind-db-rust.gemspec
 
       - name: Upload source gem artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gem-source
           path: "*.gem"
@@ -85,15 +85,15 @@ jobs:
       contents: write # Required for tag push
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1
         with:
           ruby-version: "4.0"
 
       - name: Download all gem artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: all-gems
           pattern: gem-*
@@ -105,7 +105,7 @@ jobs:
           ls -lh all-gems/
 
       - name: Configure RubyGems for trusted publishing
-        uses: rubygems/configure-rubygems-credentials@v1.0.0
+        uses: rubygems/configure-rubygems-credentials@bc6dd217f8a4f919d6835fcfefd470ef821f5c44 # v1.0.0
 
       - name: Publish gems to RubyGems.org
         run: |
