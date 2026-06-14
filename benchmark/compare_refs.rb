@@ -24,6 +24,8 @@ BENCHMARK_RUNNER = <<~'RUBY'
   iterations = ARGV.fetch(1).to_i
   batch_size = ARGV.fetch(2).to_i
   cases = ARGV.fetch(3).split(',')
+  warmup_iterations = ARGV.fetch(4).to_i
+  samples = ARGV.fetch(5).to_i
   rng = Random.new(12_345)
 
   def random_ipv4(rng)
@@ -53,38 +55,65 @@ BENCHMARK_RUNNER = <<~'RUBY'
     end
   end
 
-  def measure_case(reader, case_name, ips, batch_size)
+  def run_case(reader, case_name, ips, batch_size)
     path = %w[country iso_code]
-    elapsed = Benchmark.realtime do
-      case case_name
-      when 'get'
-        ips.each { |ip| reader.get(ip) }
-      when 'get_path'
-        ips.each { |ip| reader.get_path(ip, path) }
-      when 'get_many'
-        ips.each_slice(batch_size) { |batch| reader.get_many(batch) }
-      when 'get_many_path'
-        ips.each_slice(batch_size) { |batch| reader.get_many_path(batch, path) }
-      else
-        raise ArgumentError, "unknown case: #{case_name}"
+    case case_name
+    when 'get'
+      ips.each { |ip| reader.get(ip) }
+    when 'get_path'
+      ips.each { |ip| reader.get_path(ip, path) }
+    when 'get_many'
+      ips.each_slice(batch_size) { |batch| reader.get_many(batch) }
+    when 'get_many_path'
+      ips.each_slice(batch_size) { |batch| reader.get_many_path(batch, path) }
+    else
+      raise ArgumentError, "unknown case: #{case_name}"
+    end
+  end
+
+  def median(values)
+    sorted = values.sort
+    midpoint = sorted.length / 2
+    return sorted.fetch(midpoint) if sorted.length.odd?
+
+    (sorted.fetch(midpoint - 1) + sorted.fetch(midpoint)) / 2.0
+  end
+
+  def measure_case(reader, case_name, ips, warmup_ips, batch_size, samples)
+    run_case(reader, case_name, warmup_ips, batch_size) unless warmup_ips.empty?
+
+    measurements = Array.new(samples) do
+      elapsed = Benchmark.realtime do
+        run_case(reader, case_name, ips, batch_size)
       end
+
+      {
+        operations: ips.length,
+        real_seconds: elapsed,
+        operations_per_second: ips.length / elapsed,
+      }
     end
 
+    rates = measurements.map { |sample| sample.fetch(:operations_per_second) }
     {
       supported: true,
       operations: ips.length,
-      real_seconds: elapsed,
-      operations_per_second: ips.length / elapsed,
+      sample_count: samples,
+      samples: measurements,
+      median_operations_per_second: median(rates),
+      min_operations_per_second: rates.min,
+      max_operations_per_second: rates.max,
     }
   end
 
   reader = MaxMind::DB::Rust::Reader.new(db_path, mode: reader_mode)
   ips = Array.new(iterations) { random_ipv4(rng) }
+  warmup_ips = ips.first([warmup_iterations, ips.length].min)
   results = {}
 
   cases.each do |case_name|
     results[case_name] = if case_supported?(reader, case_name)
-                           measure_case(reader, case_name, ips, batch_size)
+                           measure_case(reader, case_name, ips, warmup_ips, batch_size, samples)
                          else
                            { supported: false }
                          end
@@ -110,6 +139,8 @@ def parse_options(argv)
     candidate_ref: 'HEAD',
     db_path: DEFAULT_DB_PATH,
     iterations: 10_000,
+    warmup_iterations: 1_000,
+    samples: 5,
     batch_size: 100,
     cases: DEFAULT_CASES,
     json_output: nil,
@@ -144,6 +175,12 @@ def add_benchmark_options(parser, options)
   end
   parser.on('--iterations N', Integer, 'Number of lookup operations per case') do |value|
     options[:iterations] = value
+  end
+  parser.on('--warmup-iterations N', Integer, 'Warmup operations per case before sampling') do |value|
+    options[:warmup_iterations] = value
+  end
+  parser.on('--samples N', Integer, 'Measured samples per case') do |value|
+    options[:samples] = value
   end
   parser.on('--batch-size N', Integer, 'Batch size for get_many cases') do |value|
     options[:batch_size] = value
@@ -213,6 +250,8 @@ def benchmark_worktree(path, options)
     options[:iterations].to_s,
     options[:batch_size].to_s,
     options[:cases].join(','),
+    options[:warmup_iterations].to_s,
+    options[:samples].to_s,
     chdir: path,
   )
   JSON.parse(stdout)
@@ -223,30 +262,32 @@ def compare_results(baseline, candidate, cases, max_regression_pct)
 
   puts
   puts 'Benchmark Ref Comparison'
-  puts '=' * 72
-  puts 'Case                  Baseline/s     Candidate/s        Delta'
-  puts '-' * 72
+  puts '=' * 96
+  puts 'Case              Base median/s  Cand median/s       Delta      Base min/s    Cand min/s'
+  puts '-' * 96
 
   cases.each do |case_name|
     baseline_case = baseline.fetch(case_name, { 'supported' => false })
     candidate_case = candidate.fetch(case_name, { 'supported' => false })
 
     unless baseline_case['supported'] && candidate_case['supported']
-      puts format('%-16s %15s %15s %12s', case_name, 'unsupported', 'unsupported', '-')
+      puts format('%-16s %14s %14s %11s %15s %13s', case_name, 'unsupported', 'unsupported', '-', '-', '-')
       next
     end
 
-    baseline_rate = baseline_case.fetch('operations_per_second')
-    candidate_rate = candidate_case.fetch('operations_per_second')
+    baseline_rate = baseline_case.fetch('median_operations_per_second')
+    candidate_rate = candidate_case.fetch('median_operations_per_second')
     delta_pct = ((candidate_rate / baseline_rate) - 1.0) * 100.0
     regressions << [case_name, delta_pct] if max_regression_pct && delta_pct < -max_regression_pct
 
     puts format(
-      '%-16s %15.2f %15.2f %+11.2f%%',
+      '%-16s %14.2f %14.2f %+10.2f%% %15.2f %13.2f',
       case_name,
       baseline_rate,
       candidate_rate,
       delta_pct,
+      baseline_case.fetch('min_operations_per_second'),
+      candidate_case.fetch('min_operations_per_second'),
     )
   end
 
@@ -264,6 +305,8 @@ repo_root = File.expand_path('..', __dir__)
 
 abort "Database file not found: #{options[:db_path]}" unless File.exist?(options[:db_path])
 abort 'Iterations must be positive' unless options[:iterations].positive?
+abort 'Warmup iterations cannot be negative' if options[:warmup_iterations].negative?
+abort 'Samples must be positive' unless options[:samples].positive?
 abort 'Batch size must be positive' unless options[:batch_size].positive?
 abort 'At least one benchmark case is required' if options[:cases].empty?
 
@@ -291,6 +334,8 @@ begin
     candidate_ref: options[:candidate_ref],
     database: options[:db_path],
     iterations: options[:iterations],
+    warmup_iterations: options[:warmup_iterations],
+    samples: options[:samples],
     batch_size: options[:batch_size],
     cases: options[:cases],
     baseline: baseline,

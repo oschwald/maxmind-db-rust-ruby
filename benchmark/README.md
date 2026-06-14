@@ -113,11 +113,15 @@ ruby benchmark/compare_refs.rb \
 ### Useful Options
 
 - `--cases get,get_path,get_many,get_many_path` - Select benchmark cases.
+- `--samples 5` - Number of measured samples per case.
+- `--warmup-iterations 1000` - Warmup operations per case before measuring.
 - `--batch-size 100` - Batch size for `get_many` cases.
-- `--max-regression-pct 5` - Exit non-zero if any supported case regresses by more than 5%.
+- `--max-regression-pct 5` - Exit non-zero if any supported case's median throughput regresses by more than 5%.
 - `--json-output benchmark/results.json` - Save raw measurements for later review.
 - `--skip-build` - Reuse already-built worktrees.
 - `--keep-worktrees` - Keep temporary worktrees for inspection.
 
 Cases unsupported by either ref are reported as unsupported and are skipped for
-regression threshold checks.
+regression threshold checks. The summary table reports median throughput for the
+comparison delta and includes each ref's minimum sample throughput as a quick
+stability check.
