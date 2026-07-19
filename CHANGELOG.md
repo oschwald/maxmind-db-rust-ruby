@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Decoded MMDB UTF-8 strings and map keys directly into Ruby strings from raw
   bytes, avoiding unchecked Rust strings while preserving Ruby's behavior for
   invalid UTF-8 in corrupt databases.
+- Propagated Ruby hash insertion errors from `Metadata#description` instead of
+  silently returning a partial description.
 
 ## [0.5.0] - 2026-06-14
 

@@ -550,13 +550,13 @@ impl Metadata {
         self.database_type.clone()
     }
 
-    fn description(&self) -> RHash {
+    fn description(&self) -> Result<RHash, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
         let hash = ruby.hash_new();
         for (k, v) in &self.description_map {
-            let _ = hash.aset(k.as_str(), v.as_str());
+            hash.aset(k.as_str(), v.as_str())?;
         }
-        hash
+        Ok(hash)
     }
 
     fn ip_version(&self) -> u16 {
