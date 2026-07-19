@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    maxmind-db-rust (0.5.0)
+    maxmind-db-rust (0.6.0)
       rb_sys (~> 0.9)
 
 GEM
