@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   array insertion overhead for large input collections.
 - Improved `IPAddr` lookup performance by converting its public integer
   representation directly instead of allocating packed address strings.
+- Avoided allocating a temporary candidate vector on parsed-path cache hits.
 
 ### Changed
 

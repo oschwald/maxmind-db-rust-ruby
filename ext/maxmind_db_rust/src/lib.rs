@@ -953,18 +953,17 @@ impl Reader {
         path: RArray,
         hash: u64,
     ) -> Result<Option<Arc<[OwnedPathElement]>>, Error> {
-        let candidates = match self.path_cache.lock() {
-            Ok(cache) => cache
-                .iter()
-                .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
-                .map(|entry| entry.elements.clone())
-                .collect::<Vec<_>>(),
+        let cache = match self.path_cache.lock() {
+            Ok(cache) => cache,
             Err(_) => return Ok(None),
         };
 
-        for candidate in candidates {
-            if path_matches_cached(path, candidate.as_ref())? {
-                return Ok(Some(candidate));
+        for entry in cache
+            .iter()
+            .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
+        {
+            if path_matches_cached(path, entry.elements.as_ref())? {
+                return Ok(Some(entry.elements.clone()));
             }
         }
 
