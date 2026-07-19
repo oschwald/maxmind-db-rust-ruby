@@ -236,10 +236,12 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
-    ip = IPAddr.new('1.1.1.1')
-    _record = reader.get(ip)
+    ipv4 = '81.2.69.142'
+    ipv6 = '2001:220::'
 
-    # Should not raise an error
+    assert_equal reader.get(ipv4), reader.get(IPAddr.new(ipv4))
+    assert_equal reader.get(ipv6), reader.get(IPAddr.new(ipv6))
+
     reader.close
   end
 
