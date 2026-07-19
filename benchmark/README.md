@@ -114,6 +114,10 @@ ruby benchmark/compare_refs.rb \
 ### Useful Options
 
 - `--cases get,get_path,get_many,get_many_path` - Select benchmark cases.
+- Additional cases `get_fixed` and `get_path_fixed` repeat `--fixed-ip` to
+  exercise a cache-hot record. `get_ipaddr` and `get_path_ipaddr` use prebuilt
+  `IPAddr` inputs.
+- `--fixed-ip 81.2.69.142` - Address used by the fixed-input cases.
 - `--samples 5` - Number of measured samples per case.
 - `--warmup-iterations 1000` - Warmup operations per case before measuring.
 - `--batch-size 100` - Batch size for `get_many` cases.

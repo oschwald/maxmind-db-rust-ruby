@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the requirement to atomically replace database paths during updates.
 - Alternated baseline and candidate subprocesses between benchmark samples to
   reduce order and thermal bias in git-ref comparisons.
+- Added fixed-record and prebuilt-`IPAddr` benchmark cases for cache-hot and
+  input-conversion performance comparisons.
 
 ### Fixed
 

@@ -3,6 +3,7 @@
 
 require 'benchmark'
 require 'fileutils'
+require 'ipaddr'
 require 'json'
 require 'open3'
 require 'optparse'
@@ -15,6 +16,7 @@ BENCHMARK_RUNNER = <<~'RUBY'
   # frozen_string_literal: true
 
   require 'benchmark'
+  require 'ipaddr'
   require 'json'
 
   $LOAD_PATH.unshift(File.expand_path('lib', Dir.pwd))
@@ -26,6 +28,7 @@ BENCHMARK_RUNNER = <<~'RUBY'
   cases = ARGV.fetch(3).split(',')
   warmup_iterations = ARGV.fetch(4).to_i
   samples = ARGV.fetch(5).to_i
+  fixed_ip = ARGV.fetch(6)
   rng = Random.new(12_345)
 
   def random_ipv4(rng)
@@ -42,9 +45,9 @@ BENCHMARK_RUNNER = <<~'RUBY'
 
   def case_supported?(reader, case_name)
     case case_name
-    when 'get'
+    when 'get', 'get_fixed', 'get_ipaddr'
       reader.respond_to?(:get)
-    when 'get_path'
+    when 'get_path', 'get_path_fixed', 'get_path_ipaddr'
       reader.respond_to?(:get_path)
     when 'get_many'
       reader.respond_to?(:get_many)
@@ -58,9 +61,9 @@ BENCHMARK_RUNNER = <<~'RUBY'
   def run_case(reader, case_name, ips, batch_size)
     path = %w[country iso_code]
     case case_name
-    when 'get'
+    when 'get', 'get_fixed', 'get_ipaddr'
       ips.each { |ip| reader.get(ip) }
-    when 'get_path'
+    when 'get_path', 'get_path_fixed', 'get_path_ipaddr'
       ips.each { |ip| reader.get_path(ip, path) }
     when 'get_many'
       ips.each_slice(batch_size) { |batch| reader.get_many(batch) }
@@ -107,11 +110,20 @@ BENCHMARK_RUNNER = <<~'RUBY'
   end
 
   reader = MaxMind::DB::Rust::Reader.new(db_path, mode: reader_mode)
-  ips = Array.new(iterations) { random_ipv4(rng) }
-  warmup_ips = ips.first([warmup_iterations, ips.length].min)
+  random_ips = Array.new(iterations) { random_ipv4(rng) }
+  fixed_ips = Array.new(iterations, fixed_ip.freeze)
+  ipaddr_ips = random_ips.map { |ip| IPAddr.new(ip) }
   results = {}
 
   cases.each do |case_name|
+    ips = if case_name.end_with?('_fixed')
+            fixed_ips
+          elsif case_name.end_with?('_ipaddr')
+            ipaddr_ips
+          else
+            random_ips
+          end
+    warmup_ips = ips.first([warmup_iterations, ips.length].min)
     results[case_name] = if case_supported?(reader, case_name)
                            measure_case(reader, case_name, ips, warmup_ips, batch_size, samples)
                          else
@@ -142,6 +154,7 @@ def parse_options(argv)
     warmup_iterations: 1_000,
     samples: 5,
     batch_size: 100,
+    fixed_ip: '81.2.69.142',
     cases: DEFAULT_CASES,
     json_output: nil,
     keep_worktrees: false,
@@ -185,7 +198,10 @@ def add_benchmark_options(parser, options)
   parser.on('--batch-size N', Integer, 'Batch size for get_many cases') do |value|
     options[:batch_size] = value
   end
-  parser.on('--cases LIST', 'Comma-separated cases: get,get_path,get_many,get_many_path') do |value|
+  parser.on('--fixed-ip IP', 'IP address used by get_fixed and get_path_fixed') do |value|
+    options[:fixed_ip] = value
+  end
+  parser.on('--cases LIST', 'Comma-separated benchmark cases') do |value|
     options[:cases] = value.split(',').map(&:strip).reject(&:empty?)
   end
 end
@@ -252,6 +268,7 @@ def benchmark_worktree(path, options)
     options[:cases].join(','),
     options[:warmup_iterations].to_s,
     options[:samples].to_s,
+    options[:fixed_ip],
     chdir: path,
   )
   JSON.parse(stdout)
@@ -360,6 +377,12 @@ abort 'Samples must be positive' unless options[:samples].positive?
 abort 'Batch size must be positive' unless options[:batch_size].positive?
 abort 'At least one benchmark case is required' if options[:cases].empty?
 
+begin
+  IPAddr.new(options[:fixed_ip])
+rescue IPAddr::InvalidAddressError
+  abort "Invalid fixed IP address: #{options[:fixed_ip]}"
+end
+
 regressions = []
 tmpdir = Dir.mktmpdir('maxminddb-rust-bench-')
 baseline_path = nil
@@ -384,6 +407,7 @@ begin
     warmup_iterations: options[:warmup_iterations],
     samples: options[:samples],
     batch_size: options[:batch_size],
+    fixed_ip: options[:fixed_ip],
     cases: options[:cases],
     baseline: baseline,
     candidate: candidate,
