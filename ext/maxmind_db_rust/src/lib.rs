@@ -673,20 +673,17 @@ impl Reader {
         let reader = reader_option.as_ref().unwrap();
 
         if let Ok(ip_array) = RArray::try_convert(ips) {
-            let results = ruby.ary_new_capa(ip_array.len());
-            for index in 0..ip_array.len() {
+            return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
                 let ip = ip_array.entry::<Value>(index as isize)?;
-                results.push(self.lookup_ip_value(&ruby, reader, ip)?)?;
-            }
-            return Ok(results);
+                self.lookup_ip_value(&ruby, reader, ip)
+            }));
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        let results = ruby.ary_new();
-        for ip in ips.enumeratorize("each", ()) {
-            results.push(self.lookup_ip_value(&ruby, reader, ip?)?)?;
-        }
-        Ok(results)
+        ruby.ary_try_from_iter(
+            ips.enumeratorize("each", ())
+                .map(|ip| self.lookup_ip_value(&ruby, reader, ip?)),
+        )
     }
 
     fn get_many_path(&self, ips: Value, path: Value) -> Result<RArray, Error> {
@@ -700,20 +697,17 @@ impl Reader {
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
         if let Ok(ip_array) = RArray::try_convert(ips) {
-            let results = ruby.ary_new_capa(ip_array.len());
-            for index in 0..ip_array.len() {
+            return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
                 let ip = ip_array.entry::<Value>(index as isize)?;
-                results.push(self.lookup_ip_path_value(&ruby, reader, ip, &path_elements)?)?;
-            }
-            return Ok(results);
+                self.lookup_ip_path_value(&ruby, reader, ip, &path_elements)
+            }));
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        let results = ruby.ary_new();
-        for ip in ips.enumeratorize("each", ()) {
-            results.push(self.lookup_ip_path_value(&ruby, reader, ip?, &path_elements)?)?;
-        }
-        Ok(results)
+        ruby.ary_try_from_iter(
+            ips.enumeratorize("each", ())
+                .map(|ip| self.lookup_ip_path_value(&ruby, reader, ip?, &path_elements)),
+        )
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {

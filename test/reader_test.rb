@@ -652,6 +652,20 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_many_batches_larger_than_the_native_buffer
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    source_ips = ['81.2.69.142', '2001:220::', '1.1.1.1']
+    ips = Array.new(257) { |index| source_ips[index % source_ips.length] }
+    path = %w[country iso_code]
+
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(ips)
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips, path)
+
+    reader.close
+  end
+
   def test_get_many_streams_enumerables_without_materializing
     skip 'Test database not found' unless File.exist?(test_db_path)
 
