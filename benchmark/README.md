@@ -98,7 +98,8 @@ Rust (Memory):          5714401.33 lookups/sec (33.23x)
 
 Compares lookup throughput between two git refs of this repository. The script
 creates temporary worktrees, builds each ref, runs deterministic lookup cases in
-subprocesses, and reports throughput deltas.
+fresh subprocesses, and reports throughput deltas. Baseline and candidate
+processes alternate for each sample to reduce order and thermal bias.
 
 ### Usage
 

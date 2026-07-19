@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clarified that thread-safe lookups remain serialized by MRI's global VM lock.
 - Documented the file-lifecycle safety contract for memory-mapped readers and
   the requirement to atomically replace database paths during updates.
+- Alternated baseline and candidate subprocesses between benchmark samples to
+  reduce order and thermal bias in git-ref comparisons.
 
 ### Fixed
 

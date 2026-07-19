@@ -257,6 +257,56 @@ def benchmark_worktree(path, options)
   JSON.parse(stdout)
 end
 
+def median(values)
+  sorted = values.sort
+  midpoint = sorted.length / 2
+  return sorted.fetch(midpoint) if sorted.length.odd?
+
+  (sorted.fetch(midpoint - 1) + sorted.fetch(midpoint)) / 2.0
+end
+
+def aggregate_benchmark_runs(runs, cases)
+  cases.to_h do |case_name|
+    case_runs = runs.map { |run| run.fetch(case_name, { 'supported' => false }) }
+    next [case_name, { 'supported' => false }] unless case_runs.all? { |result| result['supported'] }
+
+    measurements = case_runs.flat_map { |result| result.fetch('samples') }
+    rates = measurements.map { |sample| sample.fetch('operations_per_second') }
+    [
+      case_name,
+      {
+        'supported' => true,
+        'operations' => case_runs.first.fetch('operations'),
+        'sample_count' => measurements.length,
+        'samples' => measurements,
+        'median_operations_per_second' => median(rates),
+        'min_operations_per_second' => rates.min,
+        'max_operations_per_second' => rates.max,
+      },
+    ]
+  end
+end
+
+def benchmark_refs_alternating(baseline_path, candidate_path, options)
+  runs = { baseline: [], candidate: [] }
+  sample_options = options.merge(samples: 1)
+
+  options[:samples].times do |sample_index|
+    order = sample_index.even? ? %i[baseline candidate] : %i[candidate baseline]
+    order.each do |ref_name|
+      path = ref_name == :baseline ? baseline_path : candidate_path
+      ref = ref_name == :baseline ? options[:baseline_ref] : options[:candidate_ref]
+      warn "Benchmarking #{ref_name} #{ref} (sample #{sample_index + 1}/#{options[:samples]})..."
+      runs.fetch(ref_name) << benchmark_worktree(path, sample_options)
+    end
+  end
+
+  [
+    aggregate_benchmark_runs(runs.fetch(:baseline), options[:cases]),
+    aggregate_benchmark_runs(runs.fetch(:candidate), options[:cases]),
+  ]
+end
+
 def compare_results(baseline, candidate, cases, max_regression_pct)
   regressions = []
 
@@ -324,10 +374,7 @@ begin
   warn "Building candidate #{options[:candidate_ref]}..."
   build_worktree(candidate_path, skip_build: options[:skip_build])
 
-  warn "Benchmarking baseline #{options[:baseline_ref]}..."
-  baseline = benchmark_worktree(baseline_path, options)
-  warn "Benchmarking candidate #{options[:candidate_ref]}..."
-  candidate = benchmark_worktree(candidate_path, options)
+  baseline, candidate = benchmark_refs_alternating(baseline_path, candidate_path, options)
 
   payload = {
     baseline_ref: options[:baseline_ref],
