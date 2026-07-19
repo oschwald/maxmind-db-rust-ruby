@@ -734,6 +734,26 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_string_cache_stays_process_bounded_across_threads
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    GC.start
+    root_arrays_before = ObjectSpace.each_object(Array).count { |array| array.length == 4096 }
+
+    threads = Array.new(16) do
+      Thread.new { reader.get('81.2.69.142') }
+    end
+    threads.each(&:join)
+    GC.start
+    root_arrays_after = ObjectSpace.each_object(Array).count { |array| array.length == 4096 }
+
+    assert_operator root_arrays_before, :>=, 1
+    assert_equal root_arrays_before, root_arrays_after
+
+    reader.close
+  end
+
   def test_close_during_concurrent_lookups_reports_closed_reader
     skip 'Test database not found' unless File.exist?(test_db_path)
 

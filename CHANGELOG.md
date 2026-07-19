@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Batched Ruby array and hash insertion while decoding MMDB records to reduce
   protected Ruby C API calls during full-record lookups.
+- Replaced per-thread string caches with one fixed-size process cache that uses
+  its Ruby root array directly, improving reuse while bounding retained memory.
 
 ### Changed
 

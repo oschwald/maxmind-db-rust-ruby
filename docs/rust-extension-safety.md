@@ -44,9 +44,10 @@ finish using that `Arc`, while later method calls see the closed state.
 
 ## Caches
 
-The string cache is thread-local and keeps Ruby string objects rooted through a
-Ruby array owned by `MaxMind::DB::Rust`. Cache entries contain Rust-owned hashes
-and byte vectors, while the rooted Ruby strings remain visible to GC.
+The string cache is a fixed-size Ruby array owned by `MaxMind::DB::Rust`. It is
+both the direct-mapped cache and the GC root for its frozen Ruby strings. Cache
+access happens under Ruby's GVL, and thread-local state only memoizes the handle
+to the globally rooted array.
 
 MMDB UTF-8 strings and map keys are decoded as borrowed bytes and copied into
 UTF-8-tagged Ruby strings without first constructing Rust `str` values. Valid

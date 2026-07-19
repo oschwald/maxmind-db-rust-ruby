@@ -10,7 +10,7 @@ use memmap2::Mmap;
 use rustc_hash::FxHasher;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::OnceCell,
     collections::{BTreeMap, VecDeque},
     fmt,
     fs::File,
@@ -36,33 +36,12 @@ const STRING_CACHE_MIN_LEN: usize = 2;
 const STRING_CACHE_MAX_LEN: usize = 64;
 const PATH_CACHE_MAX_ENTRIES: usize = 64;
 
-#[derive(Default)]
-struct StringCacheEntry {
-    hash: u64,
-    value: Vec<u8>,
-}
-
-struct StringCache {
-    entries: Box<[StringCacheEntry]>,
-}
-
-impl StringCache {
-    fn new() -> Self {
-        let entries = (0..STRING_CACHE_MAX)
-            .map(|_| StringCacheEntry::default())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Self { entries }
-    }
-}
-
 thread_local! {
-    static STRING_CACHE: RefCell<StringCache> = RefCell::new(StringCache::new());
     static STRING_CACHE_ROOTS: OnceCell<RArray> = const { OnceCell::new() };
 }
 
 #[inline]
-fn string_cache_roots_owner(ruby: &magnus::Ruby) -> RArray {
+fn global_string_cache_roots(ruby: &magnus::Ruby) -> RArray {
     let value = rust_module(ruby)
         .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
         .expect("string cache roots constant should exist");
@@ -70,22 +49,8 @@ fn string_cache_roots_owner(ruby: &magnus::Ruby) -> RArray {
 }
 
 #[inline]
-fn init_thread_string_cache_roots(ruby: &magnus::Ruby) -> RArray {
-    let roots = ruby.ary_new_capa(STRING_CACHE_MAX);
-    for _ in 0..STRING_CACHE_MAX {
-        roots
-            .push(ruby.qnil().as_value())
-            .expect("string cache roots initialization should succeed");
-    }
-    string_cache_roots_owner(ruby)
-        .push(roots.as_value())
-        .expect("string cache roots owner should retain per-thread roots");
-    roots
-}
-
-#[inline]
 fn string_cache_roots(ruby: &magnus::Ruby) -> RArray {
-    STRING_CACHE_ROOTS.with(|roots| *roots.get_or_init(|| init_thread_string_cache_roots(ruby)))
+    STRING_CACHE_ROOTS.with(|roots| *roots.get_or_init(|| global_string_cache_roots(ruby)))
 }
 
 #[inline]
@@ -101,26 +66,25 @@ fn cached_utf8_string(ruby: &magnus::Ruby, value: &[u8]) -> Value {
     let hash = hasher.finish();
     let slot = (hash as usize) & (STRING_CACHE_MAX - 1);
 
-    STRING_CACHE.with(|cache_cell| {
-        let mut cache = cache_cell.borrow_mut();
-        let entry = &mut cache.entries[slot];
-        if entry.hash == hash && entry.value.as_slice() == value {
-            return string_cache_roots(ruby)
-                .entry::<Value>(slot as isize)
-                .expect("string cache roots lookup should succeed");
+    let roots = string_cache_roots(ruby);
+    let cached = roots
+        .entry::<Value>(slot as isize)
+        .expect("string cache roots lookup should succeed");
+    if let Some(cached) = RString::from_value(cached) {
+        // SAFETY: the bytes are compared immediately while the globally rooted
+        // frozen Ruby string remains alive and cannot be mutated.
+        if unsafe { cached.as_slice() } == value {
+            return cached.into_value_with(ruby);
         }
+    }
 
-        let string = ruby.enc_str_new(value, ruby.utf8_encoding());
-        string.freeze();
-        let cached = string.as_value();
-        string_cache_roots(ruby)
-            .store(slot as isize, cached)
-            .expect("string cache roots update should succeed");
-        entry.hash = hash;
-        entry.value.clear();
-        entry.value.extend_from_slice(value);
-        cached
-    })
+    let string = ruby.enc_str_new(value, ruby.utf8_encoding());
+    string.freeze();
+    let cached = string.as_value();
+    roots
+        .store(slot as isize, cached)
+        .expect("string cache roots update should succeed");
+    cached
 }
 
 /// Wrapper that owns the Ruby value produced by deserializing a MaxMind record
@@ -1515,7 +1479,11 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
         .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
         .is_err()
     {
-        rust.const_set(STRING_CACHE_ROOTS_CONST, ruby.ary_new())?;
+        let roots = ruby.ary_new_capa(STRING_CACHE_MAX);
+        for _ in 0..STRING_CACHE_MAX {
+            roots.push(ruby.qnil().as_value())?;
+        }
+        rust.const_set(STRING_CACHE_ROOTS_CONST, roots)?;
     }
 
     if rust.const_get::<_, Value>(MAP_KEY_ROOTS_CONST).is_ok() {
