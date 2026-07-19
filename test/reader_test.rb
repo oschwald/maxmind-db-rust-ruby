@@ -81,6 +81,48 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_buffer_reader_preserves_invalid_utf8_string_bytes
+    buffer = File.binread(string_value_db_path)
+    valid_value = '1.1.1.16/28'
+    value_offset = buffer.index(valid_value)
+
+    refute_nil value_offset
+    assert_equal value_offset, buffer.rindex(valid_value)
+
+    buffer.setbyte(value_offset, 0xff)
+
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+    value = reader.get('1.1.1.16')
+
+    assert_equal Encoding::UTF_8, value.encoding
+    refute_predicate value, :valid_encoding?
+    assert_equal [0xff, *valid_value.bytes.drop(1)], value.bytes
+
+    reader.close
+  end
+
+  def test_buffer_reader_preserves_invalid_utf8_map_key_bytes
+    buffer = File.binread(decoder_db_path)
+    valid_key = 'utf8_stringX'
+    key_offset = buffer.index(valid_key)
+
+    refute_nil key_offset
+    assert_equal key_offset, buffer.rindex(valid_key)
+
+    buffer.setbyte(key_offset, 0xff)
+
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+    nested_map = reader.get('1.1.1.1').dig('map', 'mapX')
+    key = nested_map.keys.find { |candidate| !candidate.valid_encoding? }
+
+    refute_nil key
+    assert_equal Encoding::UTF_8, key.encoding
+    assert_equal [0xff, *valid_key.bytes.drop(1)], key.bytes
+    assert_equal 'hello', nested_map[key]
+
+    reader.close
+  end
+
   def test_invalid_buffer_database
     error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) do
       MaxMind::DB::Rust::Reader.new(
@@ -753,5 +795,9 @@ class ReaderTest < Minitest::Test
 
   def ipv4_only_db_path
     File.join(TEST_DATA_DIR, 'MaxMind-DB-test-ipv4-24.mmdb')
+  end
+
+  def string_value_db_path
+    File.join(TEST_DATA_DIR, 'MaxMind-DB-string-value-entries.mmdb')
   end
 end

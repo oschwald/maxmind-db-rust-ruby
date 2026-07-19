@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded the `maxminddb` crate to 0.30.0, improving selective path decoding
   and hardening iteration and verification of corrupt databases.
 
+### Fixed
+
+- Decoded MMDB UTF-8 strings and map keys directly into Ruby strings from raw
+  bytes, avoiding unchecked Rust strings while preserving Ruby's behavior for
+  invalid UTF-8 in corrupt databases.
+
 ## [0.5.0] - 2026-06-14
 
 ### Added

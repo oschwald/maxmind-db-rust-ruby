@@ -1,6 +1,3 @@
-// SAFETY: the `maxminddb` crate is built with the `unsafe-str-decode` feature enabled.
-// Ruby validates UTF-8 when we construct `RString`s, so skipping the redundant check in
-// the decoder is safe and avoids re-validating every string record twice.
 use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
@@ -42,7 +39,7 @@ const PATH_CACHE_MAX_ENTRIES: usize = 64;
 #[derive(Default)]
 struct StringCacheEntry {
     hash: u64,
-    value: String,
+    value: Vec<u8>,
 }
 
 struct StringCache {
@@ -92,9 +89,11 @@ fn string_cache_roots(ruby: &magnus::Ruby) -> RArray {
 }
 
 #[inline]
-fn cached_string(ruby: &magnus::Ruby, value: &str) -> Value {
+fn cached_utf8_string(ruby: &magnus::Ruby, value: &[u8]) -> Value {
     if !(STRING_CACHE_MIN_LEN..=STRING_CACHE_MAX_LEN).contains(&value.len()) {
-        return ruby.str_new(value).into_value_with(ruby);
+        return ruby
+            .enc_str_new(value, ruby.utf8_encoding())
+            .into_value_with(ruby);
     }
 
     let mut hasher = FxHasher::default();
@@ -105,13 +104,13 @@ fn cached_string(ruby: &magnus::Ruby, value: &str) -> Value {
     STRING_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
         let entry = &mut cache.entries[slot];
-        if entry.hash == hash && entry.value == value {
+        if entry.hash == hash && entry.value.as_slice() == value {
             return string_cache_roots(ruby)
                 .entry::<Value>(slot as isize)
                 .expect("string cache roots lookup should succeed");
         }
 
-        let string = ruby.str_new(value);
+        let string = ruby.enc_str_new(value, ruby.utf8_encoding());
         string.freeze();
         let cached = string.as_value();
         string_cache_roots(ruby)
@@ -119,7 +118,7 @@ fn cached_string(ruby: &magnus::Ruby, value: &str) -> Value {
             .expect("string cache roots update should succeed");
         entry.hash = hash;
         entry.value.clear();
-        entry.value.push_str(value);
+        entry.value.extend_from_slice(value);
         cached
     })
 }
@@ -163,7 +162,10 @@ impl<'ruby, 'de> DeserializeSeed<'de> for RubyValueSeed<'ruby> {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(RubyValueVisitor { ruby: self.ruby })
+        maxminddb_crate::deserialize_any_with_raw_strings(
+            deserializer,
+            RubyValueVisitor { ruby: self.ruby },
+        )
     }
 }
 
@@ -249,18 +251,33 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
         Ok(RubyDecodedValue::new(value.into_value_with(self.ruby)))
     }
 
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer
+            .deserialize_bytes(RubyUtf8StringVisitor { ruby: self.ruby })
+            .map(RubyDecodedValue::new)
+    }
+
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(cached_string(self.ruby, value)))
+        Ok(RubyDecodedValue::new(cached_utf8_string(
+            self.ruby,
+            value.as_bytes(),
+        )))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(RubyDecodedValue::new(cached_string(self.ruby, &value)))
+        Ok(RubyDecodedValue::new(cached_utf8_string(
+            self.ruby,
+            value.as_bytes(),
+        )))
     }
 
     fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
@@ -304,13 +321,46 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             Some(cap) => self.ruby.hash_new_capa(cap),
             None => self.ruby.hash_new(),
         };
-        while let Some(key) = map.next_key::<&'de str>()? {
+        while let Some(key_val) = map.next_key_seed(RubyMapKeySeed { ruby: self.ruby })? {
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
-            let key_val = cached_string(self.ruby, key);
             hash.aset(key_val, value.into_value())
                 .map_err(|e| de::Error::custom(e.to_string()))?;
         }
         Ok(RubyDecodedValue::new(hash.into_value_with(self.ruby)))
+    }
+}
+
+struct RubyUtf8StringVisitor<'ruby> {
+    ruby: &'ruby magnus::Ruby,
+}
+
+impl<'de, 'ruby> Visitor<'de> for RubyUtf8StringVisitor<'ruby> {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("MMDB UTF-8 string bytes")
+    }
+
+    fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(cached_utf8_string(self.ruby, value))
+    }
+}
+
+struct RubyMapKeySeed<'ruby> {
+    ruby: &'ruby magnus::Ruby,
+}
+
+impl<'ruby, 'de> DeserializeSeed<'de> for RubyMapKeySeed<'ruby> {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_identifier(RubyUtf8StringVisitor { ruby: self.ruby })
     }
 }
 
