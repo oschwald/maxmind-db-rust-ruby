@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module.
 - Moved parsed-path ownership, hashing, matching, and conversion into a focused
   Rust module.
+- Moved reader behavior and Ruby method registration into a focused Rust module,
+  leaving the crate root responsible only for extension initialization.
 - Alternated baseline and candidate subprocesses between benchmark samples to
   reduce order and thermal bias in git-ref comparisons.
 - Added fixed-record and prebuilt-`IPAddr` benchmark cases for cache-hot and
