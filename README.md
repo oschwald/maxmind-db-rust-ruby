@@ -290,6 +290,18 @@ Get metadata about the database.
 
 **Returns:** `MaxMind::DB::Rust::Metadata` instance
 
+#### `verify()`
+
+Perform a comprehensive validation of the database metadata, search tree, data
+section separator, and referenced data records. Verification traverses the
+entire database and may use memory proportional to the number of distinct
+referenced values, so it is intended for explicit integrity checks rather than
+the lookup hot path.
+
+**Returns:** `true` when the database passes verification
+
+**Raises:** `MaxMind::DB::Rust::InvalidDatabaseError` when verification fails
+
 #### `close()`
 
 Close the database and release resources.

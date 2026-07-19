@@ -142,6 +142,41 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_verify_valid_database
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    [MaxMind::DB::Rust::MODE_MMAP, MaxMind::DB::Rust::MODE_MEMORY].each do |mode|
+      reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: mode)
+
+      assert reader.verify
+
+      reader.close
+    end
+  end
+
+  def test_verify_rejects_corrupt_database
+    path = File.join(TEST_DATA_DIR, 'GeoIP2-City-Test-Broken-Double-Format.mmdb')
+    skip 'Broken test database not found' unless File.exist?(path)
+
+    reader = MaxMind::DB::Rust::Reader.new(path)
+    error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) { reader.verify }
+
+    assert_match(/verification failed/i, error.message)
+
+    reader.close
+  end
+
+  def test_verify_after_close_reports_closed_reader
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    reader.close
+
+    error = assert_raises(RuntimeError) { reader.verify }
+
+    assert_match(/closed/, error.message)
+  end
+
   def test_reader_inspect
     skip 'Test database not found' unless File.exist?(test_db_path)
 

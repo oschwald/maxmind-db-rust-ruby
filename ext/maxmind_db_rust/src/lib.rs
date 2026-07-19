@@ -441,6 +441,13 @@ impl ReaderSource {
         }
     }
 
+    fn verify(&self) -> Result<(), MaxMindDbError> {
+        match self {
+            ReaderSource::Mmap(reader) => reader.verify(),
+            ReaderSource::Memory(reader) => reader.verify(),
+        }
+    }
+
     #[inline]
     fn within(&self, network: IpNetwork) -> Result<ReaderWithin<'_>, MaxMindDbError> {
         match self {
@@ -729,6 +736,18 @@ impl Reader {
             node_count: meta.node_count,
             record_size: meta.record_size,
         })
+    }
+
+    fn verify(&self) -> Result<bool, Error> {
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+        let guard = self.get_reader(&ruby)?;
+        let reader_option = guard.as_ref();
+        let reader = reader_option.as_ref().unwrap();
+
+        reader.verify().map_err(|err| {
+            invalid_database_exception(&format!("Database verification failed: {err}"))
+        })?;
+        Ok(true)
     }
 
     fn close(&self) {
@@ -1496,6 +1515,7 @@ fn init(ruby: &magnus::Ruby) -> Result<(), Error> {
     reader_class.define_method("get_many", magnus::method!(Reader::get_many, 1))?;
     reader_class.define_method("get_many_path", magnus::method!(Reader::get_many_path, 2))?;
     reader_class.define_method("metadata", magnus::method!(Reader::metadata, 0))?;
+    reader_class.define_method("verify", magnus::method!(Reader::verify, 0))?;
     reader_class.define_method("close", magnus::method!(Reader::close, 0))?;
     reader_class.define_method("closed", magnus::method!(Reader::closed, 0))?;
     reader_class.define_method("inspect", magnus::method!(Reader::inspect, 0))?;

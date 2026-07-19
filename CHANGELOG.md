@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `Reader#verify` for opt-in comprehensive database integrity checks
+  using the verifier introduced by `maxminddb` 0.30.0.
+
 ### Performance
 
 - Batched Ruby array and hash insertion while decoding MMDB records to reduce
