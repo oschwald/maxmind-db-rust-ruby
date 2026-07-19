@@ -52,10 +52,11 @@ when that lifecycle cannot be guaranteed.
 
 ## Caches
 
-The string cache is a fixed-size Ruby array owned by `MaxMind::DB::Rust`. It is
-both the direct-mapped cache and the GC root for its frozen Ruby strings. Cache
-access happens under Ruby's GVL, and thread-local state only memoizes the handle
-to the globally rooted array.
+All decoded MMDB strings are frozen. Strings within the configured length range
+may also be retained in a fixed-size Ruby array owned by `MaxMind::DB::Rust`.
+That array is both the direct-mapped cache and the GC root for its entries.
+Cache access happens under Ruby's GVL, and thread-local state only memoizes the
+handle to the globally rooted array.
 
 MMDB UTF-8 strings and map keys are decoded as borrowed bytes and copied into
 UTF-8-tagged Ruby strings without first constructing Rust `str` values. Valid

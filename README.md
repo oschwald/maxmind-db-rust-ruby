@@ -102,6 +102,9 @@ iso_codes = reader.get_many_path(ips, ['country', 'iso_code'])
 reader.close
 ```
 
+Decoded MMDB strings, including hash keys, are frozen. Call `dup` before
+modifying a decoded string.
+
 ### Using IPAddr Objects
 
 ```ruby

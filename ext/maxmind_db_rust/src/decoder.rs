@@ -32,9 +32,9 @@ fn string_cache_roots(ruby: &magnus::Ruby) -> RArray {
 #[inline]
 fn cached_utf8_string(ruby: &magnus::Ruby, value: &[u8]) -> Value {
     if !(STRING_CACHE_MIN_LEN..=STRING_CACHE_MAX_LEN).contains(&value.len()) {
-        return ruby
-            .enc_str_new(value, ruby.utf8_encoding())
-            .into_value_with(ruby);
+        let string = ruby.enc_str_new(value, ruby.utf8_encoding());
+        string.freeze();
+        return string.into_value_with(ruby);
     }
 
     let mut hasher = FxHasher::default();

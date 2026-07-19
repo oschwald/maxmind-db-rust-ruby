@@ -233,6 +233,21 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_decoded_strings_are_frozen_outside_the_cache_length_range
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    record = reader.get('89.160.20.112')
+    one_byte_value = record.dig('subdivisions', 0, 'iso_code')
+    cached_value = record.dig('country', 'iso_code')
+
+    assert_equal 'E', one_byte_value
+    assert_predicate one_byte_value, :frozen?
+    assert_predicate cached_value, :frozen?
+
+    reader.close
+  end
+
   def test_get_rejects_empty_ip_address
     skip 'Test database not found' unless File.exist?(test_db_path)
 

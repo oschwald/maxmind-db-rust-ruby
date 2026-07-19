@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made decoded MMDB strings consistently frozen regardless of whether their
+  length qualifies for the bounded string cache.
 - Decoded MMDB UTF-8 strings and map keys directly into Ruby strings from raw
   bytes, avoiding unchecked Rust strings while preserving Ruby's behavior for
   invalid UTF-8 in corrupt databases.
