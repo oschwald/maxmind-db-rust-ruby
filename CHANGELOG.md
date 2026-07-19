@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `Reader#verify` for opt-in comprehensive database integrity checks
   using the verifier introduced by `maxminddb` 0.30.0.
+- Added iteration and shared-reader thread-scaling benchmarks, including a
+  cache-root retention check across thread churn.
 
 ### Performance
 

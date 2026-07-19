@@ -154,3 +154,28 @@ ruby benchmark/allocation_counts.rb \
 - `--ip 81.2.69.142` - IP address used for lookups.
 - `--path country.iso_code` - Path used for `get_path`.
 - `--json-output benchmark/allocations.json` - Save raw measurements.
+
+## iteration.rb
+
+Measures records yielded per second by `Reader#each`, including network
+conversion and record decoding. Use `--network CIDR` to restrict iteration and
+`--max-records N` to bound large databases.
+
+```bash
+ruby benchmark/iteration.rb \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --samples 5
+```
+
+## thread_scaling.rb
+
+Measures one shared reader with several Ruby thread counts while keeping the
+total lookup count fixed. It also reports the number of 4,096-slot cache-root
+arrays before and after the thread churn.
+
+```bash
+ruby benchmark/thread_scaling.rb \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --iterations 100000 \
+  --threads 1,2,4,8
+```
