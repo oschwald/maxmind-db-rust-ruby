@@ -147,7 +147,7 @@ ruby benchmark/allocation_counts.rb \
 
 ### Useful Options
 
-- `--cases get,get_path,get_many` - Select allocation benchmark cases.
+- `--cases get,get_path,get_many,get_many_path` - Select allocation benchmark cases.
 - `--samples 5` - Number of measured samples per case.
 - `--warmup-iterations 100` - Warmup operations before measuring.
 - `--batch-size 100` - Batch size for `get_many`.

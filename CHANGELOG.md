@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reduce order and thermal bias in git-ref comparisons.
 - Added fixed-record and prebuilt-`IPAddr` benchmark cases for cache-hot and
   input-conversion performance comparisons.
+- Extended allocation benchmarking to cover selective batch lookups.
 
 ### Fixed
 

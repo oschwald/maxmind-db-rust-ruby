@@ -9,7 +9,7 @@ $LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
 require 'maxmind/db/rust'
 
 DEFAULT_DB_PATH = File.expand_path('../test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb', __dir__)
-DEFAULT_CASES = %w[get get_path get_many].freeze
+DEFAULT_CASES = %w[get get_path get_many get_many_path].freeze
 
 def parse_options(argv)
   options = {
@@ -31,7 +31,7 @@ def parse_options(argv)
     opts.on('--warmup-iterations N', Integer, 'Warmup operations before measuring') { |value| options[:warmup_iterations] = value }
     opts.on('--samples N', Integer, 'Measured samples per case') { |value| options[:samples] = value }
     opts.on('--batch-size N', Integer, 'Batch size for get_many') { |value| options[:batch_size] = value }
-    opts.on('--cases LIST', 'Comma-separated cases: get,get_path,get_many') do |value|
+    opts.on('--cases LIST', 'Comma-separated cases: get,get_path,get_many,get_many_path') do |value|
       options[:cases] = value.split(',').map(&:strip).reject(&:empty?)
     end
     opts.on('--ip IP', 'IP address used for lookups') { |value| options[:ip] = value }
@@ -49,10 +49,16 @@ def run_case(reader, case_name, ips, path, batch_size)
     ips.each { |ip| reader.get(ip) }
   when 'get_path'
     ips.each { |ip| reader.get_path(ip, path) }
-  when 'get_many'
-    ips.each_slice(batch_size) { |batch| reader.get_many(batch) }
+  when 'get_many', 'get_many_path'
+    run_many_case(reader, case_name, ips, path, batch_size)
   else
     raise ArgumentError, "unknown case: #{case_name}"
+  end
+end
+
+def run_many_case(reader, case_name, ips, path, batch_size)
+  ips.each_slice(batch_size) do |batch|
+    case_name == 'get_many' ? reader.get_many(batch) : reader.get_many_path(batch, path)
   end
 end
 
