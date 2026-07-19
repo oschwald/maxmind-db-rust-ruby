@@ -19,10 +19,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::Path,
     str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 
 // Error constants
@@ -591,12 +588,10 @@ impl Metadata {
 unsafe impl Send for Metadata {}
 
 /// A Ruby wrapper around the MaxMind DB reader
-#[derive(Clone)]
 #[magnus::wrap(class = "MaxMind::DB::Rust::Reader")]
 struct Reader {
-    reader: Arc<ArcSwapOption<ReaderSource>>,
-    closed: Arc<AtomicBool>,
-    path_cache: Arc<Mutex<VecDeque<CachedPath>>>,
+    reader: ArcSwapOption<ReaderSource>,
+    path_cache: Mutex<VecDeque<CachedPath>>,
     ip_version: u16,
 }
 
@@ -751,14 +746,11 @@ impl Reader {
     }
 
     fn close(&self) {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return;
-        }
         self.reader.store(None);
     }
 
     fn closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.reader.load().is_none()
     }
 
     fn inspect(&self) -> String {
@@ -1008,9 +1000,8 @@ fn create_reader(source: ReaderSource) -> Reader {
     let ip_version = source.metadata().ip_version;
     let source = Arc::new(source);
     Reader {
-        reader: Arc::new(ArcSwapOption::from(Some(source))),
-        closed: Arc::new(AtomicBool::new(false)),
-        path_cache: Arc::new(Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES))),
+        reader: ArcSwapOption::from(Some(source)),
+        path_cache: Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES)),
         ip_version,
     }
 }

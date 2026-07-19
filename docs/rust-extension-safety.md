@@ -21,7 +21,6 @@ must be Rust-owned and thread-safe.
 `Reader` stores:
 
 - an atomically swapped `Arc<ReaderSource>` for the database source,
-- an atomic closed flag,
 - a mutex-protected parsed-path cache containing only Rust-owned strings and
   indexes,
 - the database IP version copied from metadata.
@@ -37,10 +36,11 @@ Ruby objects on demand when Ruby calls them.
 
 ## Close Semantics
 
-`Reader#close` atomically marks the reader closed and swaps the shared source to
-`None`. Methods load the source through `get_reader`; if it is gone, they raise
-the closed-reader runtime error. A method that already loaded the source may
-finish using that `Arc`, while later method calls see the closed state.
+`Reader#close` atomically swaps the shared source to `None`, which is also the
+reader's closed-state representation. Methods load the source through
+`get_reader`; if it is gone, they raise the closed-reader runtime error. A
+method that already loaded the source may finish using that `Arc`, while later
+method calls see the closed state.
 
 ## Memory-Mapped Files
 
