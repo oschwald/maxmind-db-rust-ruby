@@ -365,8 +365,16 @@ Lookup performance depends on hardware, Ruby version, database, and workload.
 
 - In this project’s random-lookup benchmarks, this gem is consistently faster than the official Ruby implementation.
 - `MODE_MMAP` and `MODE_MEMORY` both perform well; which is faster can vary by environment.
+- Prefer `get_path` or `get_many_path` when only a small part of a record is
+  needed. Selective decoding avoids constructing the rest of the Ruby object
+  graph and can be substantially faster than a full-record lookup.
+- Textual IP address strings use the fastest input path. `IPAddr` objects are
+  supported but require Ruby method calls to extract their address family and
+  integer value.
 - For current, reproducible numbers on your own data and Ruby version, run `benchmark/compare_lookups.rb` against your database.
-- Safe for concurrent lookups across threads.
+- Readers are safe to share across Ruby threads. Ruby-facing lookup and decode
+  work currently runs under MRI's global VM lock, so additional Ruby threads do
+  not make one process perform lookups in parallel.
 
 ## Development
 

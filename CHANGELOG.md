@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Upgraded the `maxminddb` crate to 0.30.0, improving selective path decoding
   and hardening iteration and verification of corrupt databases.
+- Documented selective lookup and input-type performance guidance, and
+  clarified that thread-safe lookups remain serialized by MRI's global VM lock.
 
 ### Fixed
 
