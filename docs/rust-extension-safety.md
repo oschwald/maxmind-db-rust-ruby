@@ -21,7 +21,6 @@ must be Rust-owned and thread-safe.
 `Reader` stores:
 
 - an atomically swapped `Arc<ReaderSource>` for the database source,
-- an atomic closed flag,
 - a mutex-protected parsed-path cache containing only Rust-owned strings and
   indexes,
 - the database IP version copied from metadata.
@@ -37,16 +36,33 @@ Ruby objects on demand when Ruby calls them.
 
 ## Close Semantics
 
-`Reader#close` atomically marks the reader closed and swaps the shared source to
-`None`. Methods load the source through `get_reader`; if it is gone, they raise
-the closed-reader runtime error. A method that already loaded the source may
-finish using that `Arc`, while later method calls see the closed state.
+`Reader#close` atomically swaps the shared source to `None`, which is also the
+reader's closed-state representation. Methods load the source through
+`get_reader`; if it is gone, they raise the closed-reader runtime error. A
+method that already loaded the source may finish using that `Arc`, while later
+method calls see the closed state.
+
+## Memory-Mapped Files
+
+`MODE_AUTO`, `MODE_FILE`, and `MODE_MMAP` create a read-only file-backed memory
+map. The underlying file must not be modified or truncated while its reader is
+alive. Database refreshes should write a new file and atomically replace the
+path, leaving the inode used by existing readers unchanged. Use `MODE_MEMORY`
+when that lifecycle cannot be guaranteed.
 
 ## Caches
 
-The string cache is thread-local and keeps Ruby string objects rooted through a
-Ruby array owned by `MaxMind::DB::Rust`. Cache entries contain Rust-owned hash
-and string data, while the rooted Ruby strings remain visible to GC.
+All decoded MMDB strings are frozen. Strings within the configured length range
+may also be retained in a fixed-size Ruby array owned by `MaxMind::DB::Rust`.
+That array is both the direct-mapped cache and the GC root for its entries.
+Cache access happens under Ruby's GVL, and thread-local state only memoizes the
+handle to the globally rooted array.
+
+MMDB UTF-8 strings and map keys are decoded as borrowed bytes and copied into
+UTF-8-tagged Ruby strings without first constructing Rust `str` values. Valid
+databases contain valid UTF-8. For corrupt databases, Ruby may safely retain an
+invalidly encoded string, matching the official Ruby reader's behavior without
+violating Rust string invariants.
 
 The parsed-path cache is per reader and stores only Rust-owned path elements. It
 is keyed by path contents, not Ruby array identity, so mutable path arrays remain

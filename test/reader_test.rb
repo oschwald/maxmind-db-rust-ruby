@@ -81,6 +81,48 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_buffer_reader_preserves_invalid_utf8_string_bytes
+    buffer = File.binread(string_value_db_path)
+    valid_value = '1.1.1.16/28'
+    value_offset = buffer.index(valid_value)
+
+    refute_nil value_offset
+    assert_equal value_offset, buffer.rindex(valid_value)
+
+    buffer.setbyte(value_offset, 0xff)
+
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+    value = reader.get('1.1.1.16')
+
+    assert_equal Encoding::UTF_8, value.encoding
+    refute_predicate value, :valid_encoding?
+    assert_equal [0xff, *valid_value.bytes.drop(1)], value.bytes
+
+    reader.close
+  end
+
+  def test_buffer_reader_preserves_invalid_utf8_map_key_bytes
+    buffer = File.binread(decoder_db_path)
+    valid_key = 'utf8_stringX'
+    key_offset = buffer.index(valid_key)
+
+    refute_nil key_offset
+    assert_equal key_offset, buffer.rindex(valid_key)
+
+    buffer.setbyte(key_offset, 0xff)
+
+    reader = MaxMind::DB::Rust::Reader.new(buffer, mode: MaxMind::DB::Rust::MODE_PARAM_IS_BUFFER)
+    nested_map = reader.get('1.1.1.1').dig('map', 'mapX')
+    key = nested_map.keys.find { |candidate| !candidate.valid_encoding? }
+
+    refute_nil key
+    assert_equal Encoding::UTF_8, key.encoding
+    assert_equal [0xff, *valid_key.bytes.drop(1)], key.bytes
+    assert_equal 'hello', nested_map[key]
+
+    reader.close
+  end
+
   def test_invalid_buffer_database
     error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) do
       MaxMind::DB::Rust::Reader.new(
@@ -98,6 +140,41 @@ class ReaderTest < Minitest::Test
 
     refute_nil reader
     reader.close
+  end
+
+  def test_verify_valid_database
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    [MaxMind::DB::Rust::MODE_MMAP, MaxMind::DB::Rust::MODE_MEMORY].each do |mode|
+      reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: mode)
+
+      assert reader.verify
+
+      reader.close
+    end
+  end
+
+  def test_verify_rejects_corrupt_database
+    path = File.join(TEST_DATA_DIR, 'GeoIP2-City-Test-Broken-Double-Format.mmdb')
+    skip 'Broken test database not found' unless File.exist?(path)
+
+    reader = MaxMind::DB::Rust::Reader.new(path)
+    error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) { reader.verify }
+
+    assert_match(/verification failed/i, error.message)
+
+    reader.close
+  end
+
+  def test_verify_after_close_reports_closed_reader
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    reader.close
+
+    error = assert_raises(RuntimeError) { reader.verify }
+
+    assert_match(/closed/, error.message)
   end
 
   def test_reader_inspect
@@ -156,6 +233,21 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_decoded_strings_are_frozen_outside_the_cache_length_range
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    record = reader.get('89.160.20.112')
+    one_byte_value = record.dig('subdivisions', 0, 'iso_code')
+    cached_value = record.dig('country', 'iso_code')
+
+    assert_equal 'E', one_byte_value
+    assert_predicate one_byte_value, :frozen?
+    assert_predicate cached_value, :frozen?
+
+    reader.close
+  end
+
   def test_get_rejects_empty_ip_address
     skip 'Test database not found' unless File.exist?(test_db_path)
 
@@ -194,10 +286,12 @@ class ReaderTest < Minitest::Test
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
-    ip = IPAddr.new('1.1.1.1')
-    _record = reader.get(ip)
+    ipv4 = '81.2.69.142'
+    ipv6 = '2001:220::'
 
-    # Should not raise an error
+    assert_equal reader.get(ipv4), reader.get(IPAddr.new(ipv4))
+    assert_equal reader.get(ipv6), reader.get(IPAddr.new(ipv6))
+
     reader.close
   end
 
@@ -610,6 +704,20 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_many_batches_larger_than_the_native_buffer
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    source_ips = ['81.2.69.142', '2001:220::', '1.1.1.1']
+    ips = Array.new(257) { |index| source_ips[index % source_ips.length] }
+    path = %w[country iso_code]
+
+    assert_equal ips.map { |ip| reader.get(ip) }, reader.get_many(ips)
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips, path)
+
+    reader.close
+  end
+
   def test_get_many_streams_enumerables_without_materializing
     skip 'Test database not found' unless File.exist?(test_db_path)
 
@@ -692,6 +800,26 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_string_cache_stays_process_bounded_across_threads
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    GC.start
+    root_arrays_before = ObjectSpace.each_object(Array).count { |array| array.length == 4096 }
+
+    threads = Array.new(16) do
+      Thread.new { reader.get('81.2.69.142') }
+    end
+    threads.each(&:join)
+    GC.start
+    root_arrays_after = ObjectSpace.each_object(Array).count { |array| array.length == 4096 }
+
+    assert_operator root_arrays_before, :>=, 1
+    assert_equal root_arrays_before, root_arrays_after
+
+    reader.close
+  end
+
   def test_close_during_concurrent_lookups_reports_closed_reader
     skip 'Test database not found' unless File.exist?(test_db_path)
 
@@ -753,5 +881,9 @@ class ReaderTest < Minitest::Test
 
   def ipv4_only_db_path
     File.join(TEST_DATA_DIR, 'MaxMind-DB-test-ipv4-24.mmdb')
+  end
+
+  def string_value_db_path
+    File.join(TEST_DATA_DIR, 'MaxMind-DB-string-value-entries.mmdb')
   end
 end

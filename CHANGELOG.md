@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `Reader#verify` for opt-in comprehensive database integrity checks
+  using the verifier introduced by `maxminddb` 0.30.0.
+- Added iteration and shared-reader thread-scaling benchmarks, including a
+  cache-root retention check across thread churn.
+
+### Performance
+
+- Batched Ruby array and hash insertion while decoding MMDB records to reduce
+  protected Ruby C API calls during full-record lookups.
+- Replaced per-thread string caches with one fixed-size process cache that uses
+  its Ruby root array directly, improving reuse while bounding retained memory.
+- Batched `get_many` and `get_many_path` result construction to reduce Ruby
+  array insertion overhead for large input collections.
+- Improved `IPAddr` lookup performance by converting its public integer
+  representation directly instead of allocating packed address strings.
+- Avoided allocating a temporary candidate vector on parsed-path cache hits.
+
+### Changed
+
+- Upgraded the `maxminddb` crate to 0.30.0, improving selective path decoding
+  and hardening iteration and verification of corrupt databases.
+- Documented selective lookup and input-type performance guidance, and
+  clarified that thread-safe lookups remain serialized by MRI's global VM lock.
+- Documented the file-lifecycle safety contract for memory-mapped readers and
+  the requirement to atomically replace database paths during updates.
+- Simplified reader ownership by removing redundant outer `Arc` wrappers and a
+  duplicate closed flag while preserving atomic close semantics.
+- Removed the redundant extension-level Cargo lockfile; workspace builds use
+  the root lockfile as the single dependency lock.
+- Moved MMDB-to-Ruby decoding and string-cache logic into a focused Rust module.
+- Moved metadata storage and Ruby method registration into a focused Rust
+  module.
+- Moved parsed-path ownership, hashing, matching, and conversion into a focused
+  Rust module.
+- Moved reader behavior and Ruby method registration into a focused Rust module,
+  leaving the crate root responsible only for extension initialization.
+- Moved extension namespace and cache-root setup into a focused initialization
+  module.
+- Alternated baseline and candidate subprocesses between benchmark samples to
+  reduce order and thermal bias in git-ref comparisons.
+- Added fixed-record and prebuilt-`IPAddr` benchmark cases for cache-hot and
+  input-conversion performance comparisons.
+- Extended allocation benchmarking to cover selective batch lookups.
+
+### Fixed
+
+- Made decoded MMDB strings consistently frozen regardless of whether their
+  length qualifies for the bounded string cache.
+- Decoded MMDB UTF-8 strings and map keys directly into Ruby strings from raw
+  bytes, avoiding unchecked Rust strings while preserving Ruby's behavior for
+  invalid UTF-8 in corrupt databases.
+- Propagated Ruby hash insertion errors from `Metadata#description` instead of
+  silently returning a partial description.
+
 ## [0.5.0] - 2026-06-14
 
 ### Added

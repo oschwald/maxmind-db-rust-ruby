@@ -98,7 +98,8 @@ Rust (Memory):          5714401.33 lookups/sec (33.23x)
 
 Compares lookup throughput between two git refs of this repository. The script
 creates temporary worktrees, builds each ref, runs deterministic lookup cases in
-subprocesses, and reports throughput deltas.
+fresh subprocesses, and reports throughput deltas. Baseline and candidate
+processes alternate for each sample to reduce order and thermal bias.
 
 ### Usage
 
@@ -113,6 +114,10 @@ ruby benchmark/compare_refs.rb \
 ### Useful Options
 
 - `--cases get,get_path,get_many,get_many_path` - Select benchmark cases.
+- Additional cases `get_fixed` and `get_path_fixed` repeat `--fixed-ip` to
+  exercise a cache-hot record. `get_ipaddr` and `get_path_ipaddr` use prebuilt
+  `IPAddr` inputs.
+- `--fixed-ip 81.2.69.142` - Address used by the fixed-input cases.
 - `--samples 5` - Number of measured samples per case.
 - `--warmup-iterations 1000` - Warmup operations per case before measuring.
 - `--batch-size 100` - Batch size for `get_many` cases.
@@ -142,10 +147,35 @@ ruby benchmark/allocation_counts.rb \
 
 ### Useful Options
 
-- `--cases get,get_path,get_many` - Select allocation benchmark cases.
+- `--cases get,get_path,get_many,get_many_path` - Select allocation benchmark cases.
 - `--samples 5` - Number of measured samples per case.
 - `--warmup-iterations 100` - Warmup operations before measuring.
 - `--batch-size 100` - Batch size for `get_many`.
 - `--ip 81.2.69.142` - IP address used for lookups.
 - `--path country.iso_code` - Path used for `get_path`.
 - `--json-output benchmark/allocations.json` - Save raw measurements.
+
+## iteration.rb
+
+Measures records yielded per second by `Reader#each`, including network
+conversion and record decoding. Use `--network CIDR` to restrict iteration and
+`--max-records N` to bound large databases.
+
+```bash
+ruby benchmark/iteration.rb \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --samples 5
+```
+
+## thread_scaling.rb
+
+Measures one shared reader with several Ruby thread counts while keeping the
+total lookup count fixed. It also reports the number of 4,096-slot cache-root
+arrays before and after the thread churn.
+
+```bash
+ruby benchmark/thread_scaling.rb \
+  --database test/data/MaxMind-DB/test-data/GeoIP2-City-Test.mmdb \
+  --iterations 100000 \
+  --threads 1,2,4,8
+```
