@@ -1326,6 +1326,9 @@ fn open_database_mmap(path: &str) -> Result<Reader, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
     let file = open_database_file(path, &ruby)?;
 
+    // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
+    // requires callers not to modify or truncate the mapped file while this
+    // reader is alive. Database updates should atomically replace the path.
     let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
         Error::new(
             ruby.exception_io_error(),

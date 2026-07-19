@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and hardening iteration and verification of corrupt databases.
 - Documented selective lookup and input-type performance guidance, and
   clarified that thread-safe lookups remain serialized by MRI's global VM lock.
+- Documented the file-lifecycle safety contract for memory-mapped readers and
+  the requirement to atomically replace database paths during updates.
 
 ### Fixed
 

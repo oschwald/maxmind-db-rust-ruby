@@ -153,6 +153,11 @@ reader = MaxMind::DB::Rust::Reader.new(
 )
 ```
 
+`MODE_AUTO`, `MODE_FILE`, and `MODE_MMAP` require the underlying file not to be
+modified or truncated while the reader is alive. To refresh a database, write
+the replacement to a new file and atomically rename it over the old path. Use
+`MODE_MEMORY` if the file lifecycle cannot be controlled this way.
+
 ### Accessing Metadata
 
 ```ruby

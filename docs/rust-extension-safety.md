@@ -42,6 +42,14 @@ Ruby objects on demand when Ruby calls them.
 the closed-reader runtime error. A method that already loaded the source may
 finish using that `Arc`, while later method calls see the closed state.
 
+## Memory-Mapped Files
+
+`MODE_AUTO`, `MODE_FILE`, and `MODE_MMAP` create a read-only file-backed memory
+map. The underlying file must not be modified or truncated while its reader is
+alive. Database refreshes should write a new file and atomically replace the
+path, leaving the inode used by existing readers unchanged. Use `MODE_MEMORY`
+when that lifecycle cannot be guaranteed.
+
 ## Caches
 
 The string cache is a fixed-size Ruby array owned by `MaxMind::DB::Rust`. It is
