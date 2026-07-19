@@ -306,10 +306,19 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             Some(cap) => self.ruby.ary_new_capa(cap),
             None => self.ruby.ary_new(),
         };
+        let mut buffer = [self.ruby.qnil().as_value(); 128];
+        let mut buffer_len = 0;
         while let Some(elem) = seq.next_element_seed(RubyValueSeed { ruby: self.ruby })? {
-            arr.push(elem.into_value())
-                .map_err(|e| de::Error::custom(e.to_string()))?;
+            buffer[buffer_len] = elem.into_value();
+            buffer_len += 1;
+            if buffer_len == buffer.len() {
+                arr.cat(&buffer)
+                    .map_err(|e| de::Error::custom(e.to_string()))?;
+                buffer_len = 0;
+            }
         }
+        arr.cat(&buffer[..buffer_len])
+            .map_err(|e| de::Error::custom(e.to_string()))?;
         Ok(RubyDecodedValue::new(arr.into_value_with(self.ruby)))
     }
 
@@ -321,11 +330,21 @@ impl<'de, 'ruby> Visitor<'de> for RubyValueVisitor<'ruby> {
             Some(cap) => self.ruby.hash_new_capa(cap),
             None => self.ruby.hash_new(),
         };
+        let mut buffer = [self.ruby.qnil().as_value(); 128];
+        let mut buffer_len = 0;
         while let Some(key_val) = map.next_key_seed(RubyMapKeySeed { ruby: self.ruby })? {
             let value = map.next_value_seed(RubyValueSeed { ruby: self.ruby })?;
-            hash.aset(key_val, value.into_value())
-                .map_err(|e| de::Error::custom(e.to_string()))?;
+            buffer[buffer_len] = key_val;
+            buffer[buffer_len + 1] = value.into_value();
+            buffer_len += 2;
+            if buffer_len == buffer.len() {
+                hash.bulk_insert(&buffer)
+                    .map_err(|e| de::Error::custom(e.to_string()))?;
+                buffer_len = 0;
+            }
         }
+        hash.bulk_insert(&buffer[..buffer_len])
+            .map_err(|e| de::Error::custom(e.to_string()))?;
         Ok(RubyDecodedValue::new(hash.into_value_with(self.ruby)))
     }
 }

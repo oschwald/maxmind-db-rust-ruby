@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- Batched Ruby array and hash insertion while decoding MMDB records to reduce
+  protected Ruby C API calls during full-record lookups.
+
 ### Changed
 
 - Upgraded the `maxminddb` crate to 0.30.0, improving selective path decoding
