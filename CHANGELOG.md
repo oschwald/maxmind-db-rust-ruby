@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved MMDB-to-Ruby decoding and string-cache logic into a focused Rust module.
 - Moved metadata storage and Ruby method registration into a focused Rust
   module.
+- Moved parsed-path ownership, hashing, matching, and conversion into a focused
+  Rust module.
 - Alternated baseline and candidate subprocesses between benchmark samples to
   reduce order and thermal bias in git-ref comparisons.
 - Added fixed-record and prebuilt-`IPAddr` benchmark cases for cache-hot and
