@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-12
+
+### Changed
+
+- Upgraded the `maxminddb` crate from 0.30.0 to 0.32.0, adding resource
+  limits for decoding and verification of malformed databases, fixing
+  overflowing extended data types, and improving record decoding, search-tree
+  lookups, and selective path lookups.
+- Databases that exceed the new decoding or verification limits now raise
+  `InvalidDatabaseError`, including databases that previously decoded successfully.
+- Updated Rust and Ruby dependencies.
+- Updated the MaxMind-DB test submodule and added coverage for the new resource
+  limits and expanded malformed database corpus.
+
 ## [0.6.0] - 2026-07-19
 
 ### Added
@@ -215,6 +229,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MODE_FILE support (use MODE_MMAP instead)
 - File descriptor support in constructor
 
+[0.7.0]: https://github.com/oschwald/maxmind-db-rust-ruby/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/oschwald/maxmind-db-rust-ruby/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/oschwald/maxmind-db-rust-ruby/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/oschwald/maxmind-db-rust-ruby/compare/v0.3.0...v0.4.0
