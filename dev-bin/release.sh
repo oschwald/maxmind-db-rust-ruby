@@ -59,7 +59,11 @@ if [ "$should_push" != "y" ]; then
     exit 1
 fi
 
-git commit -m "Update for $tag" -a
+if git diff --quiet HEAD; then
+    echo "No changes to commit; continuing with release."
+else
+    git commit -m "Update for $tag" -a
+fi
 
 git push
 
