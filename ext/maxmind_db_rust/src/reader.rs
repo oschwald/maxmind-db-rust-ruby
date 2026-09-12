@@ -447,6 +447,7 @@ impl Reader {
                 }
                 Err(MaxMindDbError::InvalidDatabase { .. })
                 | Err(MaxMindDbError::Decoding { .. })
+                | Err(MaxMindDbError::ResourceLimit { .. })
                 | Err(MaxMindDbError::Io(_)) => {
                     return Err(invalid_database_exception(ERR_BAD_DATA));
                 }
@@ -739,6 +740,7 @@ fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Erro
     match err {
         MaxMindDbError::InvalidDatabase { .. }
         | MaxMindDbError::Decoding { .. }
+        | MaxMindDbError::ResourceLimit { .. }
         | MaxMindDbError::Io(_) => invalid_database_exception(ERR_BAD_DATA),
         other => Error::new(
             ruby.exception_runtime_error(),
