@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 [dependencies]
 arc-swap = "1.9"
 ipnetwork = "0.21"
-magnus = "0.8"
+magnus = "0.9"
 maxminddb = "0.32.0"
 memmap2 = "0.9"
 rustc-hash = "2.1"
