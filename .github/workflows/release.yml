@@ -41,7 +41,7 @@ jobs:
         id: cross-gem
         with:
           platform: ${{ matrix.platform }}
-          ruby-versions: "3.2,3.3,3.4,4.0"
+          ruby-versions: "3.3,3.4,4.0"
 
       - name: Upload gem artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
