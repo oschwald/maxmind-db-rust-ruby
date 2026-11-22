@@ -18,7 +18,7 @@ Thank you for your interest in contributing to maxmind-db-rust! This document pr
 
 ### Prerequisites
 
-- Ruby 3.2 or higher
+- Ruby 3.3 or higher
 - Rust toolchain (stable)
 - Bundler
 - Git
