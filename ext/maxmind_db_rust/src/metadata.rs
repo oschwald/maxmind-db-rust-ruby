@@ -83,8 +83,8 @@ impl Metadata {
         self.record_size / 4
     }
 
-    fn search_tree_size(&self) -> u32 {
-        self.node_count * (self.record_size as u32 / 4)
+    fn search_tree_size(&self) -> u64 {
+        u64::from(self.node_count) * u64::from(self.record_size / 4)
     }
 }
 
@@ -120,4 +120,37 @@ pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {
         magnus::method!(Metadata::search_tree_size, 0),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Metadata;
+    use std::collections::BTreeMap;
+
+    fn metadata(node_count: u32, record_size: u16) -> Metadata {
+        Metadata {
+            binary_format_major_version: 2,
+            binary_format_minor_version: 0,
+            build_epoch: 0,
+            database_type: String::new(),
+            description_map: BTreeMap::new(),
+            ip_version: 6,
+            languages_list: Vec::new(),
+            node_count,
+            record_size,
+        }
+    }
+
+    #[test]
+    fn search_tree_size_does_not_wrap_at_4_gib() {
+        assert_eq!(metadata(536_870_912, 32).search_tree_size(), 4_294_967_296);
+    }
+
+    #[test]
+    fn search_tree_size_handles_maximum_node_count() {
+        assert_eq!(
+            metadata(u32::MAX, 32).search_tree_size(),
+            u64::from(u32::MAX) * 8
+        );
+    }
 }
