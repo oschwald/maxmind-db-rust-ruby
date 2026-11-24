@@ -11,8 +11,13 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, typed_data::Obj,
-    value::Opaque, ExceptionClass, IntoValue, RArray, RClass, RModule, RString, Symbol, Value,
+    error::{Error, OpaqueError},
+    prelude::*,
+    scan_args::get_kwargs,
+    scan_args::scan_args,
+    typed_data::Obj,
+    value::Opaque,
+    ExceptionClass, IntoValue, RArray, RClass, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
@@ -622,6 +627,20 @@ fn validate_lookup_ip_for_version(
     }
 }
 
+/// Lookup state shared by the block that `collect_each` passes to `each`.
+struct BatchState<F> {
+    /// Cleared when `collect_each` returns. The block may outlive the call.
+    running: AtomicBool,
+    /// Taken out while a lookup runs, and dropped when the batch ends so a
+    /// kept block doesn't hold the database open.
+    lookup: Mutex<Option<F>>,
+    /// The first lookup error, raised once `each` has unwound.
+    error: Mutex<Option<OpaqueError>>,
+}
+
+const ERR_BATCH_FINISHED: &str = "get_many block called after the batch lookup returned";
+const ERR_BATCH_REENTERED: &str = "get_many block called while it was already running";
+
 /// Calls `ips.each` with a native block and collects `lookup` of each yielded
 /// value.
 ///
@@ -629,43 +648,120 @@ fn validate_lookup_ip_for_version(
 /// exception from `each`, including `StopIteration`, reach the caller instead
 /// of looking like the end of the input.
 ///
+/// A lookup error stops the iteration with `throw`, which `each` can't rescue,
+/// and is raised after `each` unwinds, so the result can't silently come back
+/// short.
+///
 /// `each` can keep the block and call it after this returns, so the block owns
-/// everything it uses, and it only appends to `results` while this call is
-/// running. `results` stays on this frame's stack until then, which keeps it
-/// alive for the garbage collector.
-fn collect_each<F>(ruby: &magnus::Ruby, ips: Value, mut lookup: F) -> Result<RArray, Error>
+/// what it uses and only appends to `results` while this call is running.
+/// The Ruby values the closures use stay on this frame's stack until then,
+/// which keeps them alive for the garbage collector.
+fn collect_each<F>(ruby: &magnus::Ruby, ips: Value, lookup: F) -> Result<RArray, Error>
 where
     F: FnMut(&magnus::Ruby, Value) -> Result<Value, Error> + Send + 'static,
 {
     let results = ruby.ary_new();
-    let block_results = Opaque::from(results);
-    let running = Arc::new(AtomicBool::new(true));
-    let block_running = Arc::clone(&running);
+    // Keeps a stored lookup exception alive while `each` unwinds.
+    let error_values = ruby.ary_new();
+    let tag = ruby.class_object().new_instance(())?;
+    let state = Arc::new(BatchState {
+        running: AtomicBool::new(true),
+        lookup: Mutex::new(Some(lookup)),
+        error: Mutex::new(None),
+    });
 
+    let block_state = Arc::clone(&state);
+    let results_ref = Opaque::from(results);
+    let error_values_ref = Opaque::from(error_values);
+    let tag_ref = Opaque::from(tag);
     let block = ruby.proc_from_fn(move |ruby, args, _block| -> Result<Value, Error> {
+        // Read the captures up front; the lookup below can run Ruby code.
+        let state = Arc::clone(&block_state);
+        let results = ruby.get_inner(results_ref);
+        let error_values = ruby.get_inner(error_values_ref);
+        let tag = ruby.get_inner(tag_ref);
+
+        if !state.running.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                ERR_BATCH_FINISHED,
+            ));
+        }
+        let Some(mut lookup) = lock_ignoring_poison(&state.lookup).take() else {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                ERR_BATCH_REENTERED,
+            ));
+        };
+
         // Match Enumerator#next: no values yield nil, several yield an Array.
         let ip = match args {
             [] => ruby.qnil().as_value(),
             [ip] => *ip,
             ips => ruby.ary_new_from_values(ips).as_value(),
         };
-        let value = lookup(ruby, ip)?;
-        // Check after the lookup, which can run Ruby code, so nothing can end
-        // the batch between this check and the push.
-        if !block_running.load(Ordering::Acquire) {
+        let result = lookup(ruby, ip);
+
+        // The lookup can run Ruby code, so check again. Nothing between this
+        // check and the push below can end the batch.
+        if !state.running.load(Ordering::Acquire) {
             return Err(Error::new(
                 ruby.exception_runtime_error(),
-                "get_many block called after get_many returned",
+                ERR_BATCH_FINISHED,
             ));
         }
-        ruby.get_inner(block_results).push(value)?;
-        Ok(ruby.qnil().as_value())
+        *lock_ignoring_poison(&state.lookup) = Some(lookup);
+
+        match result {
+            Ok(value) => {
+                results.push(value)?;
+                Ok(ruby.qnil().as_value())
+            }
+            Err(err) => {
+                // A jump such as `break` or `throw` isn't an exception, and
+                // `each` can't rescue it, so let it continue.
+                let Some(error_value) = err.value() else {
+                    return Err(err);
+                };
+                error_values.push(error_value)?;
+                lock_ignoring_poison(&state.error).get_or_insert(err.into());
+                ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,))
+            }
+        }
     });
 
-    let outcome = ips.funcall_with_block::<_, _, Value>("each", (), block);
-    running.store(false, Ordering::Release);
+    let ips_ref = Opaque::from(ips);
+    let block_ref = Opaque::from(block);
+    let body = ruby.proc_from_fn(move |ruby, _args, _block| -> Result<Value, Error> {
+        ruby.get_inner(ips_ref).funcall_with_block::<_, _, Value>(
+            "each",
+            (),
+            ruby.get_inner(block_ref),
+        )
+    });
+    let outcome = ruby
+        .module_kernel()
+        .funcall_with_block::<_, _, Value>("catch", (tag,), body);
+
+    // The closures hold these only as `Opaque`, which the garbage collector
+    // doesn't see, so keep them on this frame's stack until `each` is done.
+    std::hint::black_box((block, error_values, tag));
+
+    state.running.store(false, Ordering::Release);
+    drop(lock_ignoring_poison(&state.lookup).take());
+    let lookup_error = lock_ignoring_poison(&state.error).take();
+
     outcome?;
+    if let Some(err) = lookup_error {
+        return Err(OpaqueError::into_error_with(err, ruby));
+    }
     Ok(results)
+}
+
+fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {

@@ -790,6 +790,27 @@ class ReaderTest < Minitest::Test
 
     assert_equal [reader.get('81.2.69.142')], reader.get_many(stream)
     assert_raises(RuntimeError) { saved_block.call('1.1.1.1') }
+    assert_raises(RuntimeError) { saved_block.call('not an ip') }
+
+    reader.close
+  end
+
+  def test_get_many_raises_lookup_errors_that_input_rescues
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', 'not an ip', '1.1.1.1']
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      ips.each do |ip|
+        block.call(ip)
+      rescue ArgumentError
+        next
+      end
+    end
+
+    assert_raises(ArgumentError) { reader.get_many(stream) }
+    assert_raises(ArgumentError) { reader.get_many_path(stream, %w[country iso_code]) }
 
     reader.close
   end
