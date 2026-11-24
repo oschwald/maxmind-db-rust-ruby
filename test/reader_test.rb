@@ -910,9 +910,11 @@ class ReaderTest < Minitest::Test
       Thread.new { block.call('not an ip') }.join
     end
 
+    # Check the exact class: the IOError from `ensure` and the
+    # UncaughtThrowError from the other thread (an ArgumentError) must not win.
     [ensure_raises, other_thread].each do |stream|
       error = assert_raises(ArgumentError) { reader.get_many(stream) }
-      assert_match(/not an ip/, error.message)
+      assert_instance_of(IPAddr::InvalidAddressError, error)
     end
 
     reader.close
