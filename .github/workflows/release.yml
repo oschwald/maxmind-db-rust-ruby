@@ -169,15 +169,27 @@ jobs:
           set -euo pipefail
           failed=()
           for gem in all-gems/*.gem; do
-            read -r name version platform < <(
+            if ! read -r name version platform < <(
               ruby -rrubygems/package -e 'spec = Gem::Package.new(ARGV[0]).spec; puts [spec.name, spec.version, spec.platform].join(" ")' "$gem"
-            )
-            status="$(curl -sS -o /dev/null -w '%{http_code}' \
-              "https://rubygems.org/api/v2/rubygems/${name}/versions/${version}.json?platform=${platform}" || true)"
-            if [ "$status" = "200" ]; then
-              echo "Skipping $gem: ${name} ${version} (${platform}) is already on RubyGems.org"
+            ); then
+              echo "::error::Could not read the gem spec from $gem"
+              failed+=("$gem")
               continue
             fi
+            status="$(curl -sS --retry 3 --retry-delay 5 -o /dev/null -w '%{http_code}' \
+              "https://rubygems.org/api/v2/rubygems/${name}/versions/${version}.json?platform=${platform}" || true)"
+            case "$status" in
+              200)
+                echo "Skipping $gem: ${name} ${version} (${platform}) is already on RubyGems.org"
+                continue
+                ;;
+              404) ;;
+              *)
+                echo "::error::Could not check whether $gem is already on RubyGems.org (HTTP $status)"
+                failed+=("$gem")
+                continue
+                ;;
+            esac
             echo "Publishing $gem"
             if ! gem push "$gem"; then
               echo "::error::Failed to publish $gem"

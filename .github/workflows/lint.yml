@@ -61,7 +61,7 @@ jobs:
 
       - name: Run Clippy
         working-directory: ext/maxmind_db_rust
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked -- -D warnings
 
   rustfmt:
     name: Rustfmt (Rust format)
