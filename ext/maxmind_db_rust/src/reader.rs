@@ -17,7 +17,7 @@ use magnus::{
     scan_args::scan_args,
     typed_data::Obj,
     value::Opaque,
-    ExceptionClass, IntoValue, RArray, RClass, RModule, RString, Symbol, Value,
+    Exception, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
@@ -26,10 +26,10 @@ use std::{
     fs::File,
     io::Read as IoRead,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
         Arc, Mutex,
     },
 };
@@ -191,20 +191,42 @@ fn next_within_result<S: AsRef<[u8]>>(
 }
 
 /// A Ruby wrapper around the MaxMind DB reader
+///
+/// The class has an allocator and an `initialize` method, like a Ruby class,
+/// so `Reader.new` returns an instance of the receiver and subclasses can
+/// override `initialize` and call `super`. An allocated reader that was never
+/// initialized behaves like a closed reader.
+#[derive(Default)]
 #[magnus::wrap(class = "MaxMind::DB::Rust::Reader")]
 struct Reader {
     reader: ArcSwapOption<ReaderSource>,
+    // Kept separately from `reader` so `metadata` still works after `close`,
+    // as it does in the official gem.
+    metadata: ArcSwapOption<Metadata>,
     path_cache: Mutex<VecDeque<CachedPath>>,
-    ip_version: u16,
+    ip_version: AtomicU16,
 }
 
 impl Reader {
-    fn new(args: &[Value]) -> Result<Self, Error> {
+    fn initialize(&self, args: &[Value]) -> Result<(), Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let args = scan_args::<(Value,), (), (), (), _, ()>(args)?;
+        // Accept the options both as keywords and as a positional Hash, like
+        // the official gem's `initialize(database, options = {})`.
+        let args = scan_args::<(Value,), (Option<RHash>,), (), (), RHash, ()>(args)?;
         let (database,) = args.required;
-        let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(args.keywords, &[], &["mode"])?;
+        let (positional_options,) = args.optional;
+        let options = match positional_options {
+            Some(_) if !args.keywords.is_empty() => {
+                return Err(Error::new(
+                    ruby.exception_arg_error(),
+                    "wrong number of arguments (given 3, expected 1..2)",
+                ));
+            }
+            Some(options) => options,
+            None => args.keywords,
+        };
+        let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(options, &[], &["mode"])?;
         let (mode,) = kw.optional;
 
         // Parse mode from options hash
@@ -213,11 +235,26 @@ impl Reader {
         let open_mode = OpenMode::from_symbol(mode, &ruby)?;
 
         // Open database with appropriate mode
-        match open_mode {
-            OpenMode::Mmap => open_database_mmap(&database_path(database)?),
-            OpenMode::Memory => open_database_memory(&database_path(database)?),
-            OpenMode::Buffer => open_database_buffer(database_buffer(database)?),
-        }
+        let source = match open_mode {
+            OpenMode::Mmap => open_database_mmap(&database_path(database, &ruby)?)?,
+            OpenMode::Memory => open_database_memory(&database_path(database, &ruby)?)?,
+            OpenMode::Buffer => open_database_buffer(database_buffer(database)?)?,
+        };
+
+        let meta = source.metadata();
+        self.ip_version.store(meta.ip_version, Ordering::Relaxed);
+        self.metadata
+            .store(Some(Arc::new(Metadata::from_maxmind(meta))));
+        self.reader.store(Some(Arc::new(source)));
+        Ok(())
+    }
+
+    fn initialize_copy(&self, _other: Value) -> Result<(), Error> {
+        let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+        Err(Error::new(
+            ruby.exception_type_error(),
+            "can't copy MaxMind::DB::Rust::Reader",
+        ))
     }
 
     #[inline]
@@ -286,7 +323,7 @@ impl Reader {
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
         let reader = Arc::clone(reader);
-        let ip_version = self.ip_version;
+        let ip_version = self.ip_version.load(Ordering::Relaxed);
         collect_each(&ruby, ips, move |ruby, ip| {
             let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
             lookup_result_to_value(ruby, reader.lookup(parsed_ip), "Database lookup failed")
@@ -312,7 +349,7 @@ impl Reader {
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
         let reader = Arc::clone(reader);
-        let ip_version = self.ip_version;
+        let ip_version = self.ip_version.load(Ordering::Relaxed);
         collect_each(&ruby, ips, move |ruby, ip| {
             let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
             let path_elements = path_elements_from_owned_path(owned_path.as_ref());
@@ -327,12 +364,10 @@ impl Reader {
     fn metadata(&self) -> Result<Metadata, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-        let meta = reader.metadata();
-
-        Ok(Metadata::from_maxmind(meta))
+        match self.metadata.load().as_ref() {
+            Some(meta) => Ok(Metadata::clone(meta)),
+            None => Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB)),
+        }
     }
 
     fn verify(&self) -> Result<bool, Error> {
@@ -360,7 +395,7 @@ impl Reader {
             "#<MaxMind::DB::Rust::Reader:0x{:x} @closed={} @ip_version={}>",
             self as *const Self as usize,
             self.closed(),
-            self.ip_version,
+            self.ip_version.load(Ordering::Relaxed),
         )
     }
 
@@ -386,7 +421,7 @@ impl Reader {
         }
 
         let network = network.unwrap_or_else(|| {
-            if reader_self.ip_version == 4 {
+            if reader_self.ip_version.load(Ordering::Relaxed) == 4 {
                 IpNetwork::V4(ipnetwork::Ipv4Network::new(Ipv4Addr::UNSPECIFIED, 0).unwrap())
             } else {
                 IpNetwork::V6(ipnetwork::Ipv6Network::new(Ipv6Addr::UNSPECIFIED, 0).unwrap())
@@ -475,7 +510,7 @@ impl Reader {
 
         // Validate network matches database IP version
         // IPv4 in IPv6 DB is OK (IPv4-mapped), IPv6 in IPv6 DB is OK
-        if let (4, IpNetwork::V6(_)) = (self.ip_version, network) {
+        if let (4, IpNetwork::V6(_)) = (self.ip_version.load(Ordering::Relaxed), network) {
             return Err(Error::new(
                 ruby.exception_arg_error(),
                 format!(
@@ -505,7 +540,7 @@ impl Reader {
 
     #[inline]
     fn validate_lookup_ip(&self, parsed_ip: IpAddr, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-        validate_lookup_ip_for_version(parsed_ip, self.ip_version, ruby)
+        validate_lookup_ip_for_version(parsed_ip, self.ip_version.load(Ordering::Relaxed), ruby)
     }
 
     #[inline]
@@ -615,17 +650,6 @@ impl Reader {
 // elements behind a Mutex. All Ruby object access happens inside method calls
 // while the Ruby VM is active.
 unsafe impl Send for Reader {}
-
-/// Helper function to create a Reader from a ReaderSource
-fn create_reader(source: ReaderSource) -> Reader {
-    let ip_version = source.metadata().ip_version;
-    let source = Arc::new(source);
-    Reader {
-        reader: ArcSwapOption::from(Some(source)),
-        path_cache: Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES)),
-        ip_version,
-    }
-}
 
 #[inline]
 fn parse_lookup_ip_for_version(
@@ -827,62 +851,65 @@ fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> 
 }
 
 /// Parse IP address from Ruby value (String or IPAddr) - optimized version
+///
+/// Plain IPv4 and IPv6 strings are parsed in Rust. Anything else is handed to
+/// `IPAddr.new`, as the official gem does, so CIDR strings, scoped IPv6
+/// addresses and the `IPAddr::InvalidAddressError` raised for invalid input
+/// all match it.
 #[inline(always)]
 fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
     // Fast path: Try as RString first (most common case) - zero-copy
     if let Some(rstring) = RString::from_value(value) {
-        // SAFETY: as_str() returns a &str that's valid as long as the Ruby string isn't modified
-        // We use it immediately for parsing, so this is safe
-        let ip_str = unsafe { rstring.as_str() }.map_err(|e| {
+        // SAFETY: the &str is only used for parsing before any Ruby code can
+        // run and modify the string.
+        if let Some(ip) = unsafe { rstring.as_str() }.ok().and_then(parse_ip_string) {
+            return Ok(ip);
+        }
+        return ipaddr_to_ip(ipaddr_new(value, ruby)?, ruby);
+    }
+
+    let ipaddr_class = ipaddr_class(ruby)?;
+    if value.is_kind_of(ipaddr_class) {
+        return ipaddr_to_ip(value, ruby);
+    }
+
+    let string: RString = value.funcall("to_s", ())?;
+    if let Some(ip) = string.to_string().ok().as_deref().and_then(parse_ip_string) {
+        return Ok(ip);
+    }
+    ipaddr_to_ip(ipaddr_new(string.as_value(), ruby)?, ruby)
+}
+
+fn ipaddr_class(ruby: &magnus::Ruby) -> Result<RClass, Error> {
+    ruby.class_object().const_get::<_, RClass>("IPAddr")
+}
+
+fn ipaddr_new(value: Value, ruby: &magnus::Ruby) -> Result<Value, Error> {
+    ipaddr_class(ruby)?.new_instance((value,))
+}
+
+fn ipaddr_to_ip(ipaddr: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+    let address: u128 = ipaddr.funcall("to_i", ())?;
+    let is_ipv4: bool = ipaddr.funcall("ipv4?", ())?;
+    if is_ipv4 {
+        let address = u32::try_from(address).map_err(|_| {
             Error::new(
                 ruby.exception_arg_error(),
-                format!("Invalid UTF-8 in IP address string: {}", e),
+                format!("'{}' does not appear to be an IPv4 address", ipaddr),
             )
         })?;
-
-        return parse_ip_string(ip_str, ruby);
+        return Ok(IpAddr::V4(Ipv4Addr::from(address)));
     }
-
-    // Slow path: Try as IPAddr object
-    if let Ok(ipaddr_class) = ruby.class_object().const_get::<_, RClass>("IPAddr") {
-        if value.is_kind_of(ipaddr_class) {
-            let address: u128 = value.funcall("to_i", ())?;
-            let is_ipv4: bool = value.funcall("ipv4?", ())?;
-            if is_ipv4 {
-                let address = u32::try_from(address).map_err(|_| {
-                    Error::new(
-                        ruby.exception_arg_error(),
-                        format!("'{}' does not appear to be an IPv4 address", value),
-                    )
-                })?;
-                return Ok(IpAddr::V4(Ipv4Addr::from(address)));
-            }
-            return Ok(IpAddr::V6(Ipv6Addr::from(address)));
-        }
-    }
-
-    if let Ok(ipaddr_obj) = value.funcall::<_, _, String>("to_s", ()) {
-        return parse_ip_string(&ipaddr_obj, ruby);
-    }
-
-    Err(Error::new(
-        ruby.exception_arg_error(),
-        format!("'{}' does not appear to be an IPv4 or IPv6 address", value),
-    ))
+    Ok(IpAddr::V6(Ipv6Addr::from(address)))
 }
 
 #[inline(always)]
-fn parse_ip_string(s: &str, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+fn parse_ip_string(s: &str) -> Option<IpAddr> {
     if let Some(ip) = parse_ipv4_string(s.as_bytes()) {
-        return Ok(IpAddr::V4(ip));
+        return Some(IpAddr::V4(ip));
     }
 
-    IpAddr::from_str(s).map_err(|_| {
-        Error::new(
-            ruby.exception_arg_error(),
-            format!("'{}' does not appear to be an IPv4 or IPv6 address", s),
-        )
-    })
+    IpAddr::from_str(s).ok()
 }
 
 #[inline(always)]
@@ -981,8 +1008,36 @@ fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
     )
 }
 
-fn database_path(database: Value) -> Result<String, Error> {
-    RString::try_convert(database)?.to_string()
+/// Convert a database path argument the way Ruby's `File.open` does: call
+/// `to_path` when the object has it (`Pathname`, `File`), then require a
+/// String.
+fn database_path(database: Value, ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
+    let database = if database.respond_to("to_path", false)? {
+        database.funcall::<_, _, Value>("to_path", ())?
+    } else {
+        database
+    };
+    let path = RString::try_convert(database)?;
+    // SAFETY: the bytes are copied before Ruby can mutate or free the string.
+    let bytes = unsafe { path.as_slice() }.to_vec();
+    if bytes.contains(&0) {
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            "string contains null byte",
+        ));
+    }
+    path_from_bytes(bytes, path)
+}
+
+#[cfg(unix)]
+fn path_from_bytes(bytes: Vec<u8>, _path: RString) -> Result<PathBuf, Error> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(_bytes: Vec<u8>, path: RString) -> Result<PathBuf, Error> {
+    Ok(PathBuf::from(path.to_string()?))
 }
 
 fn database_buffer(database: Value) -> Result<Vec<u8>, Error> {
@@ -993,88 +1048,122 @@ fn database_buffer(database: Value) -> Result<Vec<u8>, Error> {
 }
 
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
-fn open_database_mmap(path: &str) -> Result<Reader, Error> {
+fn open_database_mmap(path: &Path) -> Result<ReaderSource, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
     let file = open_database_file(path, &ruby)?;
 
     // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
     // requires callers not to modify or truncate the mapped file while this
     // reader is alive. Database updates should atomically replace the path.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
-        Error::new(
-            ruby.exception_io_error(),
-            format!("Failed to memory-map database file: {}", e),
-        )
-    })?;
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| io_error(&ruby, &e, path))?;
     let reader = MaxMindReader::from_source(mmap).map_err(|_| {
         invalid_database_exception(&format!(
             "Error opening database file ({}). Is this a valid MaxMind DB file?",
-            path
+            path.display()
         ))
     })?;
 
-    Ok(create_reader(ReaderSource::Mmap(reader)))
+    Ok(ReaderSource::Mmap(reader))
 }
 
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
-fn open_database_memory(path: &str) -> Result<Reader, Error> {
+fn open_database_memory(path: &Path) -> Result<ReaderSource, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
     let mut file = open_database_file(path, &ruby)?;
 
     let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).map_err(|e| {
-        Error::new(
-            ruby.exception_io_error(),
-            format!("Failed to read database file: {}", e),
-        )
-    })?;
+    file.read_to_end(&mut buffer)
+        .map_err(|e| io_error(&ruby, &e, path))?;
 
     reader_from_buffer(
         buffer,
         format!(
             "Error opening database file ({}). Is this a valid MaxMind DB file?",
-            path
+            path.display()
         ),
     )
 }
 
-fn open_database_buffer(buffer: Vec<u8>) -> Result<Reader, Error> {
+fn open_database_buffer(buffer: Vec<u8>) -> Result<ReaderSource, Error> {
     reader_from_buffer(
         buffer,
         "Error opening database from buffer. Is this a valid MaxMind DB file?".to_owned(),
     )
 }
 
-fn reader_from_buffer(buffer: Vec<u8>, invalid_message: String) -> Result<Reader, Error> {
+fn reader_from_buffer(buffer: Vec<u8>, invalid_message: String) -> Result<ReaderSource, Error> {
     let reader = MaxMindReader::from_source(buffer)
         .map_err(|_| invalid_database_exception(invalid_message.as_str()))?;
 
-    Ok(create_reader(ReaderSource::Memory(reader)))
+    Ok(ReaderSource::Memory(reader))
 }
 
-fn open_database_file(path: &str, ruby: &magnus::Ruby) -> Result<File, Error> {
-    File::open(Path::new(path)).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            open_not_found_error(ruby, e)
-        } else {
-            Error::new(ruby.exception_io_error(), e.to_string())
+fn open_database_file(path: &Path, ruby: &magnus::Ruby) -> Result<File, Error> {
+    let file = File::open(path).map_err(|e| io_error(ruby, &e, path))?;
+    // Opening a directory succeeds on Unix, and the error only shows up later
+    // as an unhelpful mmap or read failure. Raise Errno::EISDIR up front, as
+    // the official gem does.
+    let is_dir = file
+        .metadata()
+        .map_err(|e| io_error(ruby, &e, path))?
+        .is_dir();
+    if is_dir {
+        return Err(errno_error(ruby, "EISDIR", path));
+    }
+    Ok(file)
+}
+
+/// Convert an I/O error into the matching `Errno` exception, so callers that
+/// rescue `SystemCallError` see the same classes as with the official gem.
+/// Errors without an OS error code fall back to `IOError`.
+fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, path: &Path) -> Error {
+    #[cfg(unix)]
+    if let Some(code) = err.raw_os_error() {
+        if let Some(error) = system_call_error(ruby, code, path) {
+            return error;
         }
-    })
+    }
+
+    let errno_name = match err.kind() {
+        std::io::ErrorKind::NotFound => Some("ENOENT"),
+        std::io::ErrorKind::PermissionDenied => Some("EACCES"),
+        std::io::ErrorKind::IsADirectory => Some("EISDIR"),
+        _ => None,
+    };
+    match errno_name {
+        Some(name) => errno_error(ruby, name, path),
+        None => Error::new(
+            ruby.exception_io_error(),
+            format!("{} - {}", err, path.display()),
+        ),
+    }
 }
 
-fn open_not_found_error(ruby: &magnus::Ruby, err: std::io::Error) -> Error {
-    let errno = ruby
+/// `SystemCallError.new(path, code)`, which Ruby turns into the `Errno`
+/// subclass for that code.
+#[cfg(unix)]
+fn system_call_error(ruby: &magnus::Ruby, code: i32, path: &Path) -> Option<Error> {
+    let class = ruby
+        .class_object()
+        .const_get::<_, RClass>("SystemCallError")
+        .ok()?;
+    let exception = class
+        .new_instance((path.display().to_string(), code))
+        .ok()?;
+    Exception::from_value(exception).map(Error::from)
+}
+
+fn errno_error(ruby: &magnus::Ruby, name: &str, path: &Path) -> Error {
+    let class = ruby
         .class_object()
         .const_get::<_, RModule>("Errno")
-        .expect("Errno module should exist");
-    let enoent = errno
-        .const_get::<_, RClass>("ENOENT")
-        .expect("Errno::ENOENT should exist");
-    Error::new(
-        ExceptionClass::from_value(enoent.as_value())
-            .expect("ENOENT should convert to ExceptionClass"),
-        err.to_string(),
-    )
+        .and_then(|errno| errno.const_get::<_, RClass>(name));
+    let exception = class.and_then(|class| class.new_instance((path.display().to_string(),)));
+    match exception.map(Exception::from_value) {
+        Ok(Some(exception)) => Error::from(exception),
+        Ok(None) => Error::new(ruby.exception_io_error(), path.display().to_string()),
+        Err(error) => error,
+    }
 }
 
 /// Get the InvalidDatabaseError class
@@ -1098,7 +1187,12 @@ pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {
     rust.define_error("InvalidDatabaseError", runtime_error)?;
 
     let reader_class = rust.define_class("Reader", ruby.class_object())?;
-    reader_class.define_singleton_method("new", magnus::function!(Reader::new, -1))?;
+    reader_class.define_alloc_func::<Reader>();
+    reader_class.define_method("initialize", magnus::method!(Reader::initialize, -1))?;
+    reader_class.define_method(
+        "initialize_copy",
+        magnus::method!(Reader::initialize_copy, 1),
+    )?;
     reader_class.define_method("get", magnus::method!(Reader::get, 1))?;
     reader_class.define_method("get_path", magnus::method!(Reader::get_path, 2))?;
     reader_class.define_method(

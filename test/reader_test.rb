@@ -253,10 +253,10 @@ class ReaderTest < Minitest::Test
 
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
 
-    error = assert_raises(ArgumentError) do
+    error = assert_raises(IPAddr::InvalidAddressError) do
       reader.get('')
     end
-    assert_match(/does not appear to be/, error.message)
+    assert_includes error.message, 'invalid address'
 
     reader.close
   end
@@ -378,9 +378,7 @@ class ReaderTest < Minitest::Test
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
     reader.close
 
-    assert_raises(RuntimeError) do
-      reader.metadata
-    end
+    assert_equal 6, reader.metadata.ip_version
   end
 
   def test_iterator_support

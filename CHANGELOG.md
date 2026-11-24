@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Reader` now matches the `maxmind-db` gem in several more calls:
+  - `Reader.new` accepts a `Pathname` or any object with `to_path`, and its
+    options as a positional Hash as well as keywords.
+  - `Reader` can be subclassed. `new` returns an instance of the subclass and
+    calls its `initialize`.
+  - Errors opening the database file raise the matching `Errno` exception, such
+    as `Errno::EACCES` or `Errno::EISDIR`, instead of `IOError`.
+  - Invalid IP addresses raise `IPAddr::InvalidAddressError`, a subclass of
+    `ArgumentError`. Lookups accept CIDR strings such as `"1.2.3.4/32"` and
+    scoped IPv6 addresses such as `"fe80::1%eth0"`, as `IPAddr.new` does.
+  - `metadata` works after `close`.
+
 ### Changed
 
 - **Breaking:** Ruby 3.3 or later is now required. Ruby 3.2 is end of life,

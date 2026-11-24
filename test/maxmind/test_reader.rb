@@ -11,7 +11,7 @@
 # - Changed MaxMind::DB to MaxMind::DB::Rust
 # - Updated test data paths to test/data/MaxMind-DB/test-data/
 # - Namespaced MaxMind::DB APIs under MaxMind::DB::Rust
-# - Updated error messages to match Rust implementation
+# - Updated error messages to match Rust implementation where they differ
 # - Removed internal method tests (read_node)
 
 require 'maxmind/db/rust'
@@ -237,11 +237,9 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_bad_ip_parameter
     reader = MaxMind::DB::Rust::Reader.new(data_path('GeoIP2-City-Test.mmdb'))
-    e = assert_raises ArgumentError do
+    assert_raises ArgumentError do
       reader.get(Object.new)
     end
-    # Our implementation will have a different error message
-    assert_includes(e.message, 'does not appear to be')
     reader.close
   end
 
@@ -263,10 +261,10 @@ class MaxMindReaderTest < Minitest::Test
     reader = MaxMind::DB::Rust::Reader.new(
       data_path('MaxMind-DB-test-decoder.mmdb')
     )
-    e = assert_raises ArgumentError do
+    e = assert_raises IPAddr::InvalidAddressError do
       reader.get('not_ip')
     end
-    assert_includes(e.message, 'does not appear to be')
+    assert_includes(e.message, 'invalid address')
     reader.close
   end
 
@@ -373,11 +371,8 @@ class MaxMindReaderTest < Minitest::Test
     )
     reader.close
 
-    # Our implementation raises an error on accessing metadata after close
-    # rather than caching it
-    assert_raises RuntimeError do
-      reader.metadata.description
-    end
+    assert_equal('MaxMind DB Decoder Test database - contains every MaxMind DB data type',
+                 reader.metadata.description['en'])
   end
 
   def test_threads
