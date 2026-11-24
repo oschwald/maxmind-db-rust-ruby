@@ -29,6 +29,26 @@ class PathCacheLockTest < Minitest::Test
     assert_child_completes(script)
   end
 
+  def test_get_many_path_element_reentering_reader_with_warm_cache
+    script = <<~RUBY
+      reader = MaxMind::DB::Rust::Reader.new(DB_PATH)
+      raise 'warm-up failed' unless reader.get_many_path(['1.1.1.1'], ['array', 0]) == [1]
+
+      element = Object.new
+      element.define_singleton_method(:to_int) do
+        reader.get_many_path(['1.1.1.1'], ['array', 1])
+        0
+      end
+
+      result = reader.get_many_path(['1.1.1.1'], ['array', element])
+      raise "unexpected result: \#{result.inspect}" unless result == [1]
+
+      puts 'ok'
+    RUBY
+
+    assert_child_completes(script)
+  end
+
   def test_get_path_element_releasing_gvl_with_warm_cache
     script = <<~RUBY
       reader = MaxMind::DB::Rust::Reader.new(DB_PATH)
@@ -78,7 +98,12 @@ class PathCacheLockTest < Minitest::Test
     RUBY
 
     status, out = IO.popen([RbConfig.ruby, '-e', script], err: %i[child out]) do |io|
-      [wait_for_child(io.pid), io.read]
+      # Read while waiting so a child that writes a lot cannot block on a
+      # full pipe and look like a deadlock.
+      output = Thread.new { io.read }
+      output.report_on_exception = false
+      status = wait_for_child(io.pid)
+      [status, output.value]
     end
 
     assert_predicate status, :success?, out

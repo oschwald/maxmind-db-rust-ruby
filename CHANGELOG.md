@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `Reader#get_path` no longer deadlocks when a path element defines `to_str`
-  or `to_int` and that method calls back into the reader or releases the GVL.
+- `Reader#get_path` and `Reader#get_many_path` no longer deadlock when a path
+  element defines `to_str` or `to_int` and that method calls back into the
+  reader or releases the GVL.
   Ruby conversion methods no longer run while the path cache lock is held.
 
 ## [0.7.0] - 2026-09-12
