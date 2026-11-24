@@ -2,10 +2,18 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   release:
     types: [published]
   workflow_dispatch:
+
+# Cancel superseded runs for the same pull request. Other events get a
+# unique group so they never cancel each other.
+concurrency:
+  group: release-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
