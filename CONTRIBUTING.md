@@ -62,7 +62,8 @@ bundle exec rake compile
 This runs `build.sh`, which:
 
 1. Runs `cargo build --release --locked` in `ext/maxmind_db_rust`
-2. Copies the compiled extension into `lib/maxmind/db/`
+2. Copies the compiled extension from the workspace `target/` directory into
+   `lib/maxmind/db/`
 
 `extconf.rb` is only used when the gem is installed from source and when
 building the native gems in CI.
@@ -79,10 +80,10 @@ bundle exec rake clobber compile
 
 ### Rust Dependencies
 
-`ext/maxmind_db_rust/Cargo.lock` is committed and shipped in the source gem,
-and builds use `--locked`. After changing dependencies in
-`ext/maxmind_db_rust/Cargo.toml`, run `cargo update -p <crate>` (or
-`cargo build`) in `ext/maxmind_db_rust` and commit the updated lockfile.
+The workspace `Cargo.toml` (with the release profile) and `Cargo.lock` at the
+repository root are shipped in the source gem, and builds use `--locked`.
+After changing dependencies in `ext/maxmind_db_rust/Cargo.toml`, run
+`cargo update -p <crate>` (or `cargo build`) and commit the updated lockfile.
 
 ### Rust Unit Tests
 
@@ -197,9 +198,10 @@ cargo fmt -- --check
 
 ```
 maxmind-db-rust-ruby/
+├── Cargo.toml                    # Cargo workspace and release profile
+├── Cargo.lock                    # Locked dependency versions
 ├── ext/maxmind_db_rust/          # Rust extension code
-│   ├── Cargo.toml                # Rust dependencies and release profile
-│   ├── Cargo.lock                # Locked dependency versions
+│   ├── Cargo.toml                # Rust dependencies
 │   ├── extconf.rb                # Build configuration for source installs
 │   └── src/
 │       ├── lib.rs                # Extension entry point and shared constants

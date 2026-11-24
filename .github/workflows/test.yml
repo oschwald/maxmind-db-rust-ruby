@@ -49,8 +49,13 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ext/maxmind_db_rust/target/
+            target/
           key: ${{ runner.os }}-ruby-${{ matrix.ruby }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Run Rust unit tests
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: ext/maxmind_db_rust
+        run: cargo test --locked
 
       - name: Compile extension
         run: bundle exec rake compile
@@ -91,38 +96,6 @@ jobs:
 
       - name: Run all tests
         run: bundle exec rake test
-
-  rust-test:
-    name: Rust unit tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
-        with:
-          ruby-version: "4.0"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ext/maxmind_db_rust/target/
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-
-      - name: Run cargo test
-        working-directory: ext/maxmind_db_rust
-        run: cargo test --locked
 
   official-parity:
     name: Official maxmind-db parity

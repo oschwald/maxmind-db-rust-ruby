@@ -37,16 +37,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1
-        with:
-          ruby-version: "4.0"
-
       - name: Compare tag and gemspec version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          version="$(ruby -e 'puts Gem::Specification.load("maxmind-db-rust.gemspec").version')"
+          version="$(sed -n -E "s/^[[:space:]]*s\.version[[:space:]]*=[[:space:]]*'([^']+)'.*/\1/p" maxmind-db-rust.gemspec)"
+          if [ -z "$version" ]; then
+            echo "::error::Could not read s.version from maxmind-db-rust.gemspec"
+            exit 1
+          fi
           if [ "$RELEASE_TAG" != "v$version" ]; then
             echo "::error::Release tag $RELEASE_TAG does not match gemspec version $version (expected v$version)"
             exit 1

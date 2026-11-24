@@ -2,8 +2,8 @@
 
 Gem::Specification.new do |s|
   s.authors     = ['Gregory Oschwald']
-  s.files       = Dir['lib/**/*.rb', 'ext/maxmind_db_rust/{Cargo.toml,Cargo.lock,extconf.rb}',
-                      'ext/maxmind_db_rust/src/**/*.rs', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md']
+  s.files       = Dir['lib/**/*.rb', 'ext/**/*.{rs,toml,rb}', 'Cargo.toml', 'Cargo.lock', 'README.md', 'LICENSE',
+                      'CHANGELOG.md', 'CONTRIBUTING.md']
   s.name        = 'maxmind-db-rust'
   s.summary     = 'Unofficial high-performance Rust-based MaxMind DB reader for Ruby'
   s.version     = '0.7.0'

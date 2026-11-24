@@ -42,8 +42,9 @@ cd ../..
 # Copy to lib directory
 mkdir -p lib/maxmind/db
 
+# With workspace Cargo.toml, artifacts are in the workspace target/ directory
 # Handle platform-specific library extensions
-target_dir=ext/maxmind_db_rust/target/release
+target_dir=target/release
 case "$(uname)" in
 Darwin)
     cp "$target_dir/libmaxmind_db_rust.dylib" lib/maxmind/db/maxmind_db_rust.bundle
