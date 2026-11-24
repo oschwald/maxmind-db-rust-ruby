@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extra arguments, and checks the network when called without a block rather
   than when the returned enumerator is first used.
 
+### Fixed
+
+- Fixed a possible crash or memory corruption when GC compaction moved the
+  internal string cache. The cache is now pinned so compaction cannot move it.
+
 ## [0.7.0] - 2026-09-12
 
 ### Changed

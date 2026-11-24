@@ -48,16 +48,24 @@ pub(crate) fn initialize(ruby: &magnus::Ruby) -> Result<(), Error> {
         }
     };
 
-    if rust
-        .const_get::<_, Value>(STRING_CACHE_ROOTS_CONST)
-        .is_err()
-    {
-        let roots = ruby.ary_new_capa(STRING_CACHE_MAX);
-        for _ in 0..STRING_CACHE_MAX {
-            roots.push(ruby.qnil().as_value())?;
+    let roots = match rust.const_get::<_, Value>(STRING_CACHE_ROOTS_CONST) {
+        Ok(existing) => existing,
+        Err(_) => {
+            let roots = ruby.ary_new_capa(STRING_CACHE_MAX);
+            for _ in 0..STRING_CACHE_MAX {
+                roots.push(ruby.qnil().as_value())?;
+            }
+            rust.const_set(STRING_CACHE_ROOTS_CONST, roots)?;
+            roots.as_value()
         }
-        rust.const_set(STRING_CACHE_ROOTS_CONST, roots)?;
-    }
+    };
+    // Decoder threads keep this array's handle in a Rust thread-local that Ruby
+    // cannot see or update. Registering it as a permanent mark object pins it,
+    // so GC compaction can never move it and leave that handle stale. The
+    // constant only makes it reachable from Ruby. Register on every load, since
+    // an existing array may come from an earlier build that did not pin it;
+    // registering the same object again is harmless.
+    ruby.gc_register_mark_object(roots);
 
     if rust.const_get::<_, Value>(MAP_KEY_ROOTS_CONST).is_ok() {
         let _ = rust.funcall::<_, _, Value>("send", ("remove_const", MAP_KEY_ROOTS_CONST))?;
