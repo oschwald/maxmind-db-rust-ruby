@@ -376,6 +376,55 @@ class ReaderTest < Minitest::Test
     assert_match(/closed/, error.message)
   end
 
+  def test_closed_reader_reported_before_invalid_arguments
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    reader.close
+
+    [
+      -> { reader.get('not an ip') },
+      -> { reader.get_with_prefix_length('not an ip') },
+      -> { reader.get_path('not an ip', ['country']) },
+      -> { reader.get_path('1.1.1.1', 'not a path') },
+    ].each do |call|
+      error = assert_raises(RuntimeError) { call.call }
+      assert_match(/closed/, error.message)
+    end
+  end
+
+  def test_close_during_enumerable_batch_reports_closed_reader
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    [
+      ->(reader, ips) { reader.get_many(ips) },
+      ->(reader, ips) { reader.get_many_path(ips, ['country']) },
+    ].each do |call|
+      reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+      ips = Enumerator.new do |y|
+        y << '1.1.1.1'
+        reader.close
+        y << '1.1.1.1'
+      end
+
+      error = assert_raises(RuntimeError) { call.call(reader, ips) }
+      assert_match(/closed/, error.message)
+    end
+  end
+
+  def test_throw_while_parsing_passes_through_after_close
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ip = IPAddr.new('1.1.1.1')
+    ip.define_singleton_method(:to_i) do
+      reader.close
+      throw :done, :thrown
+    end
+
+    assert_equal(:thrown, catch(:done) { reader.get(ip) })
+  end
+
   def test_metadata_after_close
     skip 'Test database not found' unless File.exist?(test_db_path)
 
@@ -543,14 +592,7 @@ class ReaderTest < Minitest::Test
   end
 
   def test_abandoned_external_enumerator_releases_database
-    skip 'Test database not found' unless File.exist?(test_db_path)
-    skip 'Requires /proc/self/maps' unless File.readable?('/proc/self/maps')
-
-    Dir.mktmpdir do |dir|
-      db_path = File.join(dir, 'abandoned-enumerator.mmdb')
-      FileUtils.cp(test_db_path, db_path)
-      mapped = -> { File.readlines('/proc/self/maps').count { |line| line.include?(db_path) } }
-
+    with_mapped_db_copy('abandoned-enumerator.mmdb') do |db_path, mapped|
       readers = 20
       readers.times do |index|
         reader = MaxMind::DB::Rust::Reader.new(db_path)
@@ -558,11 +600,32 @@ class ReaderTest < Minitest::Test
         enumerator.next
         reader.close
       end
+      # The abandoned enumerators still hold their maps until GC frees them.
+      # This also checks that the counter sees the copy's mappings.
+      assert_operator mapped.call, :>, 0
+
       5.times { GC.start }
 
       # Before the fix every abandoned enumerator kept its map. Allow a few
       # survivors for conservative stack scanning.
       assert_operator mapped.call, :<, readers / 4
+    end
+  end
+
+  def test_close_after_each_releases_database_without_gc
+    with_mapped_db_copy('finished-each.mmdb') do |db_path, mapped|
+      reader = MaxMind::DB::Rust::Reader.new(db_path)
+
+      assert_operator mapped.call, :>, 0
+
+      reader.each('214.0.0.0/8') { |_network, _data| nil }
+      reader.each.with_index { |_entry, index| break if index == 1 }
+      assert_raises(RuntimeError) do
+        reader.each.with_index { |_entry, index| raise 'stop' if index == 1 }
+      end
+      reader.close
+
+      assert_equal 0, mapped.call
     end
   end
 
@@ -1147,6 +1210,19 @@ class ReaderTest < Minitest::Test
   end
 
   private
+
+  # Copies the test database to its own path and yields that path and a
+  # lambda counting how many times the copy is mapped into this process.
+  def with_mapped_db_copy(name)
+    skip 'Test database not found' unless File.exist?(test_db_path)
+    skip 'Requires /proc/self/maps' unless File.readable?('/proc/self/maps')
+
+    Dir.mktmpdir do |dir|
+      db_path = File.join(dir, name)
+      FileUtils.cp(test_db_path, db_path)
+      yield db_path, -> { File.readlines('/proc/self/maps').count { |line| line.include?(db_path) } }
+    end
+  end
 
   def test_db_path
     File.join(TEST_DATA_DIR, 'GeoIP2-City-Test.mmdb')
