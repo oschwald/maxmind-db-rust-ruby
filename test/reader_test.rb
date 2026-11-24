@@ -506,6 +506,35 @@ class ReaderTest < Minitest::Test
     reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
 
     assert_raises(ArgumentError) { reader.each('2001::/16') }
+    assert_raises(ArgumentError) { reader.each(IPAddr.new('2001::/16')) }
+
+    reader.close
+  end
+
+  def test_each_with_nil_on_ipv4_database
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+    networks = reader.each(nil).map { |network, _data| network }
+
+    assert_predicate networks, :any?
+    assert(networks.all?(&:ipv4?))
+
+    reader.close
+  end
+
+  def test_each_enumerator_keeps_network_given_at_creation
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    network = +'214.0.0.0/8'
+    enumerator = reader.each(network)
+    network.replace('not-a-valid-cidr')
+
+    networks = enumerator.map { |net, _data| net.to_s }
+
+    assert_predicate networks, :any?
+    assert(networks.all? { |net| net.start_with?('214.') })
 
     reader.close
   end

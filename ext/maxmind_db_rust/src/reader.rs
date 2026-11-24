@@ -358,10 +358,23 @@ impl Reader {
         // fails here and not when iteration starts.
         let network = reader_self.parse_each_network(ruby, args)?;
 
-        // If no block given, return enumerator
+        // If no block given, return enumerator. It gets the parsed network, not
+        // the original argument, so iterating does not convert it again.
         if !ruby.block_given() {
-            return Ok(rb_self.enumeratorize("each", args).as_value());
+            let enumerator = match network {
+                Some(network) => rb_self.enumeratorize("each", (network.to_string(),)),
+                None => rb_self.enumeratorize("each", ()),
+            };
+            return Ok(enumerator.as_value());
         }
+
+        let network = network.unwrap_or_else(|| {
+            if reader_self.ip_version == 4 {
+                IpNetwork::V4(ipnetwork::Ipv4Network::new(Ipv4Addr::UNSPECIFIED, 0).unwrap())
+            } else {
+                IpNetwork::V6(ipnetwork::Ipv6Network::new(Ipv6Addr::UNSPECIFIED, 0).unwrap())
+            }
+        });
 
         let mut iter = reader
             .within(network)
@@ -399,21 +412,17 @@ impl Reader {
         Ok(ruby.qnil().as_value())
     }
 
-    /// Parses the optional network argument to `each`. A missing or nil
-    /// network means the whole database.
-    fn parse_each_network(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<IpNetwork, Error> {
+    /// Parses the optional network argument to `each`. Returns `None` when the
+    /// network is missing or nil, which means the whole database.
+    fn parse_each_network(
+        &self,
+        ruby: &magnus::Ruby,
+        args: &[Value],
+    ) -> Result<Option<IpNetwork>, Error> {
         let args = scan_args::<(), (Option<Value>,), (), (), (), ()>(args)?;
-        let (network_arg,) = args.optional;
-
-        let network_arg = match network_arg {
+        let network_arg = match args.optional.0 {
             Some(value) if !value.is_nil() => value,
-            _ => {
-                return Ok(if self.ip_version == 4 {
-                    IpNetwork::V4(ipnetwork::Ipv4Network::new(Ipv4Addr::UNSPECIFIED, 0).unwrap())
-                } else {
-                    IpNetwork::V6(ipnetwork::Ipv6Network::new(Ipv6Addr::UNSPECIFIED, 0).unwrap())
-                });
-            }
+            _ => return Ok(None),
         };
 
         // Accept both String and IPAddr objects
@@ -459,7 +468,7 @@ impl Reader {
             ));
         }
 
-        Ok(network)
+        Ok(Some(network))
     }
 
     /// Helper method to get the reader from the ArcSwapOption
