@@ -56,6 +56,11 @@ pub(crate) fn initialize(ruby: &magnus::Ruby) -> Result<(), Error> {
         for _ in 0..STRING_CACHE_MAX {
             roots.push(ruby.qnil().as_value())?;
         }
+        // Decoder threads keep this array's handle in a Rust thread-local that
+        // Ruby cannot see or update. Registering it as a permanent mark object
+        // pins it, so GC compaction can never move it and leave that handle
+        // stale. The constant only makes it reachable from Ruby.
+        ruby.gc_register_mark_object(roots);
         rust.const_set(STRING_CACHE_ROOTS_CONST, roots)?;
     }
 

@@ -58,6 +58,13 @@ That array is both the direct-mapped cache and the GC root for its entries.
 Cache access happens under Ruby's GVL, and thread-local state only memoizes the
 handle to the globally rooted array.
 
+Ruby cannot see or update handles held in Rust thread-locals or other state
+outside Ruby objects, so a constant alone is not enough to root such an object:
+GC compaction may move it and leave the Rust handle stale. Any Ruby object whose
+handle is kept outside Ruby objects must be pinned. The string cache array is
+registered with `Ruby::gc_register_mark_object`, which marks it permanently
+and keeps it from moving.
+
 MMDB UTF-8 strings and map keys are decoded as borrowed bytes and copied into
 UTF-8-tagged Ruby strings without first constructing Rust `str` values. Valid
 databases contain valid UTF-8. For corrupt databases, Ruby may safely retain an
@@ -72,7 +79,8 @@ correct after mutation and Ruby object ID reuse cannot produce stale lookups.
 
 Before adding unsafe code or long-lived state, verify:
 
-- No Ruby handle is stored without a matching mark/root strategy.
+- No Ruby handle is stored without a matching mark/root strategy, and any
+  handle kept outside Ruby objects points at a pinned object.
 - Ruby string borrows are not kept across Ruby calls or stored in structs.
 - Shared state is immutable, atomic, or protected by a lock.
 - Errors from corrupt database data are mapped to `InvalidDatabaseError`.

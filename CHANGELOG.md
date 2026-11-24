@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointers.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
 
+### Fixed
+
+- Fixed a possible crash or memory corruption when GC compaction moved the
+  internal string cache. The cache is now pinned so compaction cannot move it.
+
 ## [0.7.0] - 2026-09-12
 
 ### Changed
