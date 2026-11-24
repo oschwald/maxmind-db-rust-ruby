@@ -11,7 +11,12 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, typed_data::Obj,
+    error::{Error, OpaqueError},
+    prelude::*,
+    scan_args::get_kwargs,
+    scan_args::scan_args,
+    typed_data::Obj,
+    value::Opaque,
     ExceptionClass, IntoValue, RArray, RClass, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
@@ -23,7 +28,10 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::Path,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
@@ -277,10 +285,12 @@ impl Reader {
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        ruby.ary_try_from_iter(
-            ips.enumeratorize("each", ())
-                .map(|ip| self.lookup_ip_value(&ruby, reader, ip?)),
-        )
+        let reader = Arc::clone(reader);
+        let ip_version = self.ip_version;
+        collect_each(&ruby, ips, move |ruby, ip| {
+            let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
+            lookup_result_to_value(ruby, reader.lookup(parsed_ip), "Database lookup failed")
+        })
     }
 
     fn get_many_path(&self, ips: Value, path: Value) -> Result<RArray, Error> {
@@ -301,10 +311,17 @@ impl Reader {
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        ruby.ary_try_from_iter(
-            ips.enumeratorize("each", ())
-                .map(|ip| self.lookup_ip_path_value(&ruby, reader, ip?, &path_elements)),
-        )
+        let reader = Arc::clone(reader);
+        let ip_version = self.ip_version;
+        collect_each(&ruby, ips, move |ruby, ip| {
+            let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
+            let path_elements = path_elements_from_owned_path(owned_path.as_ref());
+            lookup_result_to_value(
+                ruby,
+                reader.lookup_path(parsed_ip, &path_elements),
+                "Database lookup failed",
+            )
+        })
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -488,14 +505,7 @@ impl Reader {
 
     #[inline]
     fn validate_lookup_ip(&self, parsed_ip: IpAddr, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-        if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
-            Err(Error::new(
-                ruby.exception_arg_error(),
-                ipv6_in_ipv4_error(&parsed_ip),
-            ))
-        } else {
-            Ok(parsed_ip)
-        }
+        validate_lookup_ip_for_version(parsed_ip, self.ip_version, ruby)
     }
 
     #[inline]
@@ -597,6 +607,194 @@ fn create_reader(source: ReaderSource) -> Reader {
         path_cache: Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES)),
         ip_version,
     }
+}
+
+#[inline]
+fn parse_lookup_ip_for_version(
+    ip_address: Value,
+    ip_version: u16,
+    ruby: &magnus::Ruby,
+) -> Result<IpAddr, Error> {
+    let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
+    validate_lookup_ip_for_version(parsed_ip, ip_version, ruby)
+}
+
+#[inline]
+fn validate_lookup_ip_for_version(
+    parsed_ip: IpAddr,
+    ip_version: u16,
+    ruby: &magnus::Ruby,
+) -> Result<IpAddr, Error> {
+    if ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
+        Err(Error::new(
+            ruby.exception_arg_error(),
+            ipv6_in_ipv4_error(&parsed_ip),
+        ))
+    } else {
+        Ok(parsed_ip)
+    }
+}
+
+/// Lookup state shared by the block that `collect_each` passes to `each`.
+struct BatchState<F> {
+    /// Cleared when `collect_each` returns. The block may outlive the call.
+    running: AtomicBool,
+    /// Taken out while a lookup runs, and dropped when the batch ends so a
+    /// kept block doesn't hold the database open.
+    lookup: Mutex<Option<F>>,
+    /// The first lookup error, raised once `each` has unwound.
+    error: Mutex<Option<OpaqueError>>,
+}
+
+const ERR_BATCH_FINISHED: &str =
+    "the block that get_many or get_many_path passed to each was called after it returned";
+const ERR_BATCH_REENTERED: &str =
+    "the block that get_many or get_many_path passed to each was called while already running";
+
+/// Calls `ips.each` with a native block and collects `lookup` of each yielded
+/// value.
+///
+/// Iterating with a block, rather than an external enumerator, lets any
+/// exception from `each`, including `StopIteration`, reach the caller instead
+/// of looking like the end of the input.
+///
+/// A lookup error stops the iteration with `throw`, which `each` can't rescue,
+/// and is raised after `each` unwinds, so the result can't silently come back
+/// short.
+///
+/// `each` can keep the block and call it after this returns, so the block owns
+/// what it uses and only appends to `results` while this call is running.
+/// The Ruby values the closures use stay on this frame's stack until then,
+/// which keeps them alive for the garbage collector.
+fn collect_each<F>(ruby: &magnus::Ruby, ips: Value, lookup: F) -> Result<RArray, Error>
+where
+    F: FnMut(&magnus::Ruby, Value) -> Result<Value, Error> + Send + 'static,
+{
+    let results = ruby.ary_new();
+    // Keeps a stored lookup exception alive while `each` unwinds.
+    let error_values = ruby.ary_new();
+    let tag = ruby.class_object().new_instance(())?;
+    let state = Arc::new(BatchState {
+        running: AtomicBool::new(true),
+        lookup: Mutex::new(Some(lookup)),
+        error: Mutex::new(None),
+    });
+
+    let block_state = Arc::clone(&state);
+    let results_ref = Opaque::from(results);
+    let error_values_ref = Opaque::from(error_values);
+    let tag_ref = Opaque::from(tag);
+    let block = ruby.proc_from_fn(move |ruby, args, _block| -> Result<Value, Error> {
+        // Read the captures up front; the lookup below can run Ruby code.
+        let state = Arc::clone(&block_state);
+        let results = ruby.get_inner(results_ref);
+        let error_values = ruby.get_inner(error_values_ref);
+        let tag = ruby.get_inner(tag_ref);
+
+        if !state.running.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                ERR_BATCH_FINISHED,
+            ));
+        }
+        // An earlier lookup failed and `each` kept going. Skip the work; the
+        // batch already fails.
+        if lock_ignoring_poison(&state.error).is_some() {
+            return ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
+        }
+        let Some(mut lookup) = lock_ignoring_poison(&state.lookup).take() else {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                ERR_BATCH_REENTERED,
+            ));
+        };
+
+        // Match Enumerator#next: no values yield nil, several yield an Array.
+        let ip = match args {
+            [] => ruby.qnil().as_value(),
+            [ip] => *ip,
+            ips => ruby.ary_new_from_values(ips).as_value(),
+        };
+        let result = lookup(ruby, ip);
+
+        // The lookup can run Ruby code, so check again. Nothing between this
+        // check and the push below can end the batch.
+        if !state.running.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                ERR_BATCH_FINISHED,
+            ));
+        }
+        *lock_ignoring_poison(&state.lookup) = Some(lookup);
+
+        match result {
+            Ok(value) => {
+                results.push(value)?;
+                Ok(ruby.qnil().as_value())
+            }
+            Err(err) => {
+                // A jump such as `break` or `throw` isn't an exception, and
+                // `each` can't rescue it, so let it continue.
+                let Some(error_value) = err.value() else {
+                    return Err(err);
+                };
+                error_values.push(error_value)?;
+                lock_ignoring_poison(&state.error).get_or_insert(err.into());
+                ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,))
+            }
+        }
+    });
+
+    let ips_ref = Opaque::from(ips);
+    let block_ref = Opaque::from(block);
+    let body = ruby.proc_from_fn(move |ruby, _args, _block| -> Result<Value, Error> {
+        ruby.get_inner(ips_ref).funcall_with_block::<_, _, Value>(
+            "each",
+            (),
+            ruby.get_inner(block_ref),
+        )
+    });
+    let outcome = ruby
+        .module_kernel()
+        .funcall_with_block::<_, _, Value>("catch", (tag,), body);
+
+    // The closures hold these only as `Opaque`, which the garbage collector
+    // doesn't see, so keep them on this frame's stack until `each` is done.
+    gc_guard(&results);
+    gc_guard(&error_values);
+    gc_guard(&tag);
+    gc_guard(&block);
+
+    state.running.store(false, Ordering::Release);
+    drop(lock_ignoring_poison(&state.lookup).take());
+    let lookup_error = lock_ignoring_poison(&state.error).take();
+
+    match (outcome, lookup_error) {
+        // A jump such as `break` or `throw` from the input still wins.
+        (Err(err), _) if err.value().is_none() => Err(err),
+        // The lookup error wins over what `each` raised after it, such as an
+        // `ensure` that raises, or UncaughtThrowError when the block ran on
+        // another thread or fiber than the `catch`.
+        (_, Some(err)) => Err(OpaqueError::into_error_with(err, ruby)),
+        (Err(err), None) => Err(err),
+        (Ok(_), None) => Ok(results),
+    }
+}
+
+/// Keeps `value` in this frame's memory up to this point, like Ruby's
+/// `RB_GC_GUARD`, so the garbage collector's stack scan finds it.
+#[inline(always)]
+fn gc_guard<T: Copy>(value: &T) {
+    // SAFETY: `value` is a valid reference to an initialized `T`.
+    unsafe {
+        std::ptr::read_volatile(value);
+    }
+}
+
+fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {
