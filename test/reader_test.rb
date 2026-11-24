@@ -458,6 +458,87 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_each_with_nil_iterates_whole_database
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    expected = reader.each.map { |network, _data| network.to_s }
+
+    actual = []
+    reader.each(nil) { |network, _data| actual << network.to_s }
+
+    assert_predicate actual, :any?
+    assert_equal expected, actual
+    from_enumerator = reader.each(nil).map { |network, _data| network.to_s }
+
+    assert_equal expected, from_enumerator
+
+    reader.close
+  end
+
+  def test_each_rejects_extra_arguments
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    error = assert_raises(ArgumentError) do
+      reader.each('1.0.0.0/8', 2, 3) { |_network, _data| flunk 'block should not run' }
+    end
+    assert_match(/wrong number of arguments/, error.message)
+    assert_raises(ArgumentError) { reader.each('1.0.0.0/8', 2) }
+
+    reader.close
+  end
+
+  def test_each_without_block_rejects_invalid_network_immediately
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    assert_raises(ArgumentError) { reader.each('not-a-valid-cidr') }
+
+    reader.close
+  end
+
+  def test_each_without_block_rejects_ipv6_network_in_ipv4_database
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+
+    assert_raises(ArgumentError) { reader.each('2001::/16') }
+    assert_raises(ArgumentError) { reader.each(IPAddr.new('2001::/16')) }
+
+    reader.close
+  end
+
+  def test_each_with_nil_on_ipv4_database
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+    networks = reader.each(nil).map { |network, _data| network }
+
+    assert_predicate networks, :any?
+    assert(networks.all?(&:ipv4?))
+
+    reader.close
+  end
+
+  def test_each_enumerator_keeps_network_given_at_creation
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    network = +'214.0.0.0/8'
+    enumerator = reader.each(network)
+    network.replace('not-a-valid-cidr')
+
+    networks = enumerator.map { |net, _data| net.to_s }
+
+    assert_predicate networks, :any?
+    assert(networks.all? { |net| net.start_with?('214.') })
+
+    reader.close
+  end
+
   def test_iterator_within_ipv4_network_string
     skip 'Test database not found' unless File.exist?(test_db_path)
 
