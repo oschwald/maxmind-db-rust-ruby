@@ -1,7 +1,17 @@
 # frozen_string_literal: true
 
 require 'ipaddr'
-require 'maxmind/db/maxmind_db_rust'
+require 'rbconfig'
+
+# Precompiled gems store the extension under a Ruby version directory. Source
+# builds do not. Fall back only when the versioned file is absent so that a
+# real load failure of that file is not hidden.
+versioned_extension = File.join(__dir__, RUBY_VERSION[/\d+\.\d+/], 'maxmind_db_rust')
+if File.exist?("#{versioned_extension}.#{RbConfig::CONFIG['DLEXT']}")
+  require versioned_extension
+else
+  require 'maxmind/db/maxmind_db_rust'
+end
 
 module MaxMind
   # Check if DB is already defined as a Class (official gem)
