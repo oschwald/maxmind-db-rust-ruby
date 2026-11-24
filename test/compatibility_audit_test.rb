@@ -151,6 +151,34 @@ class CompatibilityAuditTest < Minitest::Test
     reader.close
   end
 
+  def test_reentrant_initialize_is_rejected
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.allocate
+    path = test_db_path
+    database = Object.new
+    database.define_singleton_method(:to_path) do
+      reader.send(:initialize, path)
+      path
+    end
+
+    error = assert_raises(RuntimeError) { reader.send(:initialize, database) }
+    assert_includes error.message, 'already initialized'
+    assert reader.closed
+  end
+
+  def test_failed_initialize_can_be_retried
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.allocate
+    assert_raises(Errno::ENOENT) { reader.send(:initialize, '/nonexistent/path/to/database.mmdb') }
+
+    reader.send(:initialize, test_db_path)
+
+    refute reader.closed
+    reader.close
+  end
+
   def test_allocated_reader_behaves_as_closed
     reader = MaxMind::DB::Rust::Reader.allocate
 

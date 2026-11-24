@@ -204,6 +204,9 @@ struct Reader {
     metadata: ArcSwapOption<Metadata>,
     path_cache: Mutex<VecDeque<CachedPath>>,
     ip_version: AtomicU16,
+    // Set by the first `initialize` call before it runs any Ruby code, and
+    // cleared again if that call fails.
+    initialized: AtomicBool,
 }
 
 impl Default for Reader {
@@ -213,6 +216,7 @@ impl Default for Reader {
             metadata: ArcSwapOption::empty(),
             path_cache: Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES)),
             ip_version: AtomicU16::new(0),
+            initialized: AtomicBool::new(false),
         }
     }
 }
@@ -223,14 +227,28 @@ impl Reader {
 
         // The source, metadata and IP version are stored separately, so
         // swapping them on a reader that is in use could let a lookup see a
-        // mix of two databases. Only allow initializing a fresh reader.
-        if self.metadata.load().is_some() {
+        // mix of two databases. Only allow initializing a fresh reader. The
+        // flag is claimed before any Ruby code runs (`dup`, `to_path`), so a
+        // reentrant or concurrent call is rejected too.
+        if self
+            .initialized
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return Err(Error::new(
                 ruby.exception_runtime_error(),
                 "MaxMind::DB::Rust::Reader is already initialized",
             ));
         }
 
+        let result = self.open(&ruby, args);
+        if result.is_err() {
+            self.initialized.store(false, Ordering::Release);
+        }
+        result
+    }
+
+    fn open(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<(), Error> {
         // Accept the options both as keywords and as a positional Hash, like
         // the official gem's `initialize(database, options = {})`.
         let args = scan_args::<(Value,), (Option<RHash>,), (), (), RHash, ()>(args)?;
@@ -254,12 +272,12 @@ impl Reader {
         // Parse mode from options hash
         let mode: Symbol = mode.unwrap_or_else(|| ruby.to_symbol("MODE_AUTO"));
 
-        let open_mode = OpenMode::from_symbol(mode, &ruby)?;
+        let open_mode = OpenMode::from_symbol(mode, ruby)?;
 
         // Open database with appropriate mode
         let source = match open_mode {
-            OpenMode::Mmap => open_database_mmap(&database_path(database, &ruby)?)?,
-            OpenMode::Memory => open_database_memory(&database_path(database, &ruby)?)?,
+            OpenMode::Mmap => open_database_mmap(&database_path(database, ruby)?)?,
+            OpenMode::Memory => open_database_memory(&database_path(database, ruby)?)?,
             OpenMode::Buffer => open_database_buffer(database_buffer(database)?)?,
         };
 
