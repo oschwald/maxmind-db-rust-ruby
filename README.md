@@ -307,6 +307,11 @@ entire database and may use memory proportional to the number of distinct
 referenced values, so it is intended for explicit integrity checks rather than
 the lookup hot path.
 
+Verification runs without holding Ruby's global VM lock, so other Ruby threads
+keep running while it works. It cannot be cancelled part way through:
+`Thread#raise`, `Timeout`, and signals such as Ctrl-C take effect once
+verification finishes.
+
 **Returns:** `true` when the database passes verification
 
 **Raises:** `MaxMind::DB::Rust::InvalidDatabaseError` when verification fails

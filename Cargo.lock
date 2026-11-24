@@ -151,6 +151,7 @@ dependencies = [
  "magnus",
  "maxminddb",
  "memmap2",
+ "rb-sys",
  "rustc-hash",
  "serde",
 ]
