@@ -196,7 +196,6 @@ fn next_within_result<S: AsRef<[u8]>>(
 /// so `Reader.new` returns an instance of the receiver and subclasses can
 /// override `initialize` and call `super`. An allocated reader that was never
 /// initialized behaves like a closed reader.
-#[derive(Default)]
 #[magnus::wrap(class = "MaxMind::DB::Rust::Reader")]
 struct Reader {
     reader: ArcSwapOption<ReaderSource>,
@@ -207,9 +206,30 @@ struct Reader {
     ip_version: AtomicU16,
 }
 
+impl Default for Reader {
+    fn default() -> Self {
+        Reader {
+            reader: ArcSwapOption::empty(),
+            metadata: ArcSwapOption::empty(),
+            path_cache: Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES)),
+            ip_version: AtomicU16::new(0),
+        }
+    }
+}
+
 impl Reader {
     fn initialize(&self, args: &[Value]) -> Result<(), Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
+
+        // The source, metadata and IP version are stored separately, so
+        // swapping them on a reader that is in use could let a lookup see a
+        // mix of two databases. Only allow initializing a fresh reader.
+        if self.metadata.load().is_some() {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                "MaxMind::DB::Rust::Reader is already initialized",
+            ));
+        }
 
         // Accept the options both as keywords and as a positional Hash, like
         // the official gem's `initialize(database, options = {})`.
@@ -223,7 +243,9 @@ impl Reader {
                     "wrong number of arguments (given 3, expected 1..2)",
                 ));
             }
-            Some(options) => options,
+            // `get_kwargs` removes the keys it reads, so work on a copy rather
+            // than emptying the caller's Hash.
+            Some(options) => options.funcall::<_, _, RHash>("dup", ())?,
             None => args.keywords,
         };
         let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(options, &[], &["mode"])?;
@@ -535,12 +557,22 @@ impl Reader {
     #[inline]
     fn parse_lookup_ip(&self, ip_address: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
         let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
-        self.validate_lookup_ip(parsed_ip, ruby)
+        self.validate_lookup_ip(ip_address, parsed_ip, ruby)
     }
 
     #[inline]
-    fn validate_lookup_ip(&self, parsed_ip: IpAddr, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-        validate_lookup_ip_for_version(parsed_ip, self.ip_version.load(Ordering::Relaxed), ruby)
+    fn validate_lookup_ip(
+        &self,
+        ip_address: Value,
+        parsed_ip: IpAddr,
+        ruby: &magnus::Ruby,
+    ) -> Result<IpAddr, Error> {
+        validate_lookup_ip_for_version(
+            ip_address,
+            parsed_ip,
+            self.ip_version.load(Ordering::Relaxed),
+            ruby,
+        )
     }
 
     #[inline]
@@ -658,19 +690,22 @@ fn parse_lookup_ip_for_version(
     ruby: &magnus::Ruby,
 ) -> Result<IpAddr, Error> {
     let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
-    validate_lookup_ip_for_version(parsed_ip, ip_version, ruby)
+    validate_lookup_ip_for_version(ip_address, parsed_ip, ip_version, ruby)
 }
 
 #[inline]
 fn validate_lookup_ip_for_version(
+    ip_address: Value,
     parsed_ip: IpAddr,
     ip_version: u16,
     ruby: &magnus::Ruby,
 ) -> Result<IpAddr, Error> {
     if ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
+        // Echo the argument as given, like the official gem, rather than the
+        // parsed address, which drops an IPv6 zone and normalizes.
         Err(Error::new(
             ruby.exception_arg_error(),
-            ipv6_in_ipv4_error(&parsed_ip),
+            ipv6_in_ipv4_error(ip_address),
         ))
     } else {
         Ok(parsed_ip)
@@ -873,11 +908,7 @@ fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Er
         return ipaddr_to_ip(value, ruby);
     }
 
-    let string: RString = value.funcall("to_s", ())?;
-    if let Some(ip) = string.to_string().ok().as_deref().and_then(parse_ip_string) {
-        return Ok(ip);
-    }
-    ipaddr_to_ip(ipaddr_new(string.as_value(), ruby)?, ruby)
+    ipaddr_to_ip(ipaddr_new(value, ruby)?, ruby)
 }
 
 fn ipaddr_class(ruby: &magnus::Ruby) -> Result<RClass, Error> {
@@ -1001,7 +1032,7 @@ fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Erro
 }
 
 /// Generate error message for IPv6 in IPv4-only database
-fn ipv6_in_ipv4_error(ip: &IpAddr) -> String {
+fn ipv6_in_ipv4_error(ip: Value) -> String {
     format!(
         "Error looking up {}. You attempted to look up an IPv6 address in an IPv4-only database.",
         ip
@@ -1055,7 +1086,12 @@ fn open_database_mmap(path: &Path) -> Result<ReaderSource, Error> {
     // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
     // requires callers not to modify or truncate the mapped file while this
     // reader is alive. Database updates should atomically replace the path.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| io_error(&ruby, &e, path))?;
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+        Error::new(
+            ruby.exception_io_error(),
+            format!("Failed to memory-map database file: {}", e),
+        )
+    })?;
     let reader = MaxMindReader::from_source(mmap).map_err(|_| {
         invalid_database_exception(&format!(
             "Error opening database file ({}). Is this a valid MaxMind DB file?",

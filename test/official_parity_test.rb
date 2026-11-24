@@ -141,6 +141,26 @@ class OfficialParityTest < Minitest::Test
     end
   end
 
+  def test_non_string_ip_error_matches_official_gem
+    with_readers(city_db_path, :MODE_FILE) do |official, rust|
+      [16_909_060, :'81.2.69.142', Object.new].each do |ip|
+        official_error = assert_raises(ArgumentError) { official.get(ip) }
+        rust_error = assert_raises(ArgumentError) { rust.get(ip) }
+
+        assert_equal official_error.class, rust_error.class, ip.inspect
+      end
+    end
+  end
+
+  def test_scoped_ipv6_in_ipv4_database_error_matches_official_gem
+    with_readers(ipv4_db_path, :MODE_FILE) do |official, rust|
+      official_error = assert_raises(ArgumentError) { official.get('fe80::1%eth0') }
+      rust_error = assert_raises(ArgumentError) { rust.get('fe80::1%eth0') }
+
+      assert_equal official_error.message, rust_error.message
+    end
+  end
+
   def test_cidr_lookup_matches_official_gem
     with_readers(city_db_path, :MODE_FILE) do |official, rust|
       ['81.2.69.142/32', '81.2.69.170/27', '81.2.69.142/26'].each do |ip|

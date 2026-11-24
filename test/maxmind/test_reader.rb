@@ -237,7 +237,7 @@ class MaxMindReaderTest < Minitest::Test
 
   def test_bad_ip_parameter
     reader = MaxMind::DB::Rust::Reader.new(data_path('GeoIP2-City-Test.mmdb'))
-    assert_raises ArgumentError do
+    assert_raises IPAddr::AddressFamilyError do
       reader.get(Object.new)
     end
     reader.close

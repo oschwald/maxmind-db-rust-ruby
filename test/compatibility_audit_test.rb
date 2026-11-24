@@ -108,7 +108,10 @@ class CompatibilityAuditTest < Minitest::Test
   def test_options_accept_a_positional_hash
     skip 'Test database not found' unless File.exist?(test_db_path)
 
-    reader = MaxMind::DB::Rust::Reader.new(test_db_path, { mode: MaxMind::DB::Rust::MODE_MEMORY })
+    options = { mode: MaxMind::DB::Rust::MODE_MEMORY }.freeze
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path, options)
+
+    assert_equal({ mode: MaxMind::DB::Rust::MODE_MEMORY }, options)
 
     assert_equal 'London', reader.get('81.2.69.142').dig('city', 'names', 'en')
     reader.close
@@ -139,6 +142,15 @@ class CompatibilityAuditTest < Minitest::Test
     reader.close
   end
 
+  def test_readers_cannot_be_initialized_twice
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    error = assert_raises(RuntimeError) { reader.send(:initialize, test_db_path) }
+    assert_includes error.message, 'already initialized'
+    reader.close
+  end
+
   def test_allocated_reader_behaves_as_closed
     reader = MaxMind::DB::Rust::Reader.allocate
 
@@ -157,6 +169,7 @@ class CompatibilityAuditTest < Minitest::Test
   end
 
   def test_unreadable_file_raises_errno_eacces
+    skip 'Test database not found' unless File.exist?(test_db_path)
     skip 'root can read files without read permission' if Process.respond_to?(:uid) && Process.uid.zero?
     skip 'file permissions differ on Windows' if Gem.win_platform?
 
@@ -218,6 +231,25 @@ class CompatibilityAuditTest < Minitest::Test
 
     assert_nil reader.get('fe80::1%eth0')
     assert_equal reader.get('::1:ffff:ffff'), reader.get('::1:ffff:ffff%eth0')
+    reader.close
+  end
+
+  def test_non_string_ip_arguments_go_to_ipaddr
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+
+    [16_909_060, :'81.2.69.142', Object.new, nil].each do |ip|
+      assert_raises(IPAddr::AddressFamilyError, ip.inspect) { reader.get(ip) }
+    end
+    reader.close
+  end
+
+  def test_ipv6_in_ipv4_database_error_echoes_the_argument
+    reader = MaxMind::DB::Rust::Reader.new(File.join(TEST_DATA_DIR, 'MaxMind-DB-test-ipv4-24.mmdb'))
+
+    error = assert_raises(ArgumentError) { reader.get('fe80::1%eth0') }
+    assert_includes error.message, 'Error looking up fe80::1%eth0.'
     reader.close
   end
 
