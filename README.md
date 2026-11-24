@@ -326,7 +326,7 @@ Iterate over networks in the database.
 
 **Parameters:**
 
-- `network` (String or IPAddr, optional): Network CIDR to iterate within (e.g., "192.168.0.0/16"). If omitted, iterates over all networks in the database.
+- `network` (String or IPAddr, optional): Network CIDR to iterate within (e.g., "192.168.0.0/16"). If omitted or `nil`, iterates over all networks in the database.
 
 **Yields:** IPAddr network and Hash data for each entry
 
@@ -334,7 +334,7 @@ Iterate over networks in the database.
 
 **Raises:**
 
-- `ArgumentError`: If network CIDR is invalid or IPv6 network specified for IPv4-only database
+- `ArgumentError`: If network CIDR is invalid, IPv6 network specified for IPv4-only database, or more than one argument is given. These are raised even when no block is given.
 
 ### `MaxMind::DB::Rust::Metadata`
 

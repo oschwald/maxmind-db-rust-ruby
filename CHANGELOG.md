@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointers.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
 
+### Fixed
+
+- `Reader#each(nil)` now iterates over the whole database, as documented,
+  instead of raising `ArgumentError`. `each` now raises `ArgumentError` for
+  extra arguments, and checks the network when called without a block rather
+  than when the returned enumerator is first used.
+
 ## [0.7.0] - 2026-09-12
 
 ### Changed
