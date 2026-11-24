@@ -12,7 +12,7 @@ use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
     error::Error, prelude::*, scan_args::get_kwargs, scan_args::scan_args, typed_data::Obj,
-    ExceptionClass, IntoValue, RArray, RClass, RModule, RString, Symbol, Value,
+    value::Opaque, ExceptionClass, IntoValue, RArray, RClass, RModule, RString, Symbol, Value,
 };
 use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
@@ -23,7 +23,10 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::Path,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
@@ -277,10 +280,12 @@ impl Reader {
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        ruby.ary_try_from_iter(
-            ips.enumeratorize("each", ())
-                .map(|ip| self.lookup_ip_value(&ruby, reader, ip?)),
-        )
+        let reader = Arc::clone(reader);
+        let ip_version = self.ip_version;
+        collect_each(&ruby, ips, move |ruby, ip| {
+            let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
+            lookup_result_to_value(ruby, reader.lookup(parsed_ip), "Database lookup failed")
+        })
     }
 
     fn get_many_path(&self, ips: Value, path: Value) -> Result<RArray, Error> {
@@ -301,10 +306,17 @@ impl Reader {
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        ruby.ary_try_from_iter(
-            ips.enumeratorize("each", ())
-                .map(|ip| self.lookup_ip_path_value(&ruby, reader, ip?, &path_elements)),
-        )
+        let reader = Arc::clone(reader);
+        let ip_version = self.ip_version;
+        collect_each(&ruby, ips, move |ruby, ip| {
+            let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
+            let path_elements = path_elements_from_owned_path(owned_path.as_ref());
+            lookup_result_to_value(
+                ruby,
+                reader.lookup_path(parsed_ip, &path_elements),
+                "Database lookup failed",
+            )
+        })
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -480,14 +492,7 @@ impl Reader {
 
     #[inline]
     fn validate_lookup_ip(&self, parsed_ip: IpAddr, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-        if self.ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
-            Err(Error::new(
-                ruby.exception_arg_error(),
-                ipv6_in_ipv4_error(&parsed_ip),
-            ))
-        } else {
-            Ok(parsed_ip)
-        }
+        validate_lookup_ip_for_version(parsed_ip, self.ip_version, ruby)
     }
 
     #[inline]
@@ -589,6 +594,78 @@ fn create_reader(source: ReaderSource) -> Reader {
         path_cache: Mutex::new(VecDeque::with_capacity(PATH_CACHE_MAX_ENTRIES)),
         ip_version,
     }
+}
+
+#[inline]
+fn parse_lookup_ip_for_version(
+    ip_address: Value,
+    ip_version: u16,
+    ruby: &magnus::Ruby,
+) -> Result<IpAddr, Error> {
+    let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
+    validate_lookup_ip_for_version(parsed_ip, ip_version, ruby)
+}
+
+#[inline]
+fn validate_lookup_ip_for_version(
+    parsed_ip: IpAddr,
+    ip_version: u16,
+    ruby: &magnus::Ruby,
+) -> Result<IpAddr, Error> {
+    if ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
+        Err(Error::new(
+            ruby.exception_arg_error(),
+            ipv6_in_ipv4_error(&parsed_ip),
+        ))
+    } else {
+        Ok(parsed_ip)
+    }
+}
+
+/// Calls `ips.each` with a native block and collects `lookup` of each yielded
+/// value.
+///
+/// Iterating with a block, rather than an external enumerator, lets any
+/// exception from `each`, including `StopIteration`, reach the caller instead
+/// of looking like the end of the input.
+///
+/// `each` can keep the block and call it after this returns, so the block owns
+/// everything it uses, and it only appends to `results` while this call is
+/// running. `results` stays on this frame's stack until then, which keeps it
+/// alive for the garbage collector.
+fn collect_each<F>(ruby: &magnus::Ruby, ips: Value, mut lookup: F) -> Result<RArray, Error>
+where
+    F: FnMut(&magnus::Ruby, Value) -> Result<Value, Error> + Send + 'static,
+{
+    let results = ruby.ary_new();
+    let block_results = Opaque::from(results);
+    let running = Arc::new(AtomicBool::new(true));
+    let block_running = Arc::clone(&running);
+
+    let block = ruby.proc_from_fn(move |ruby, args, _block| -> Result<Value, Error> {
+        // Match Enumerator#next: no values yield nil, several yield an Array.
+        let ip = match args {
+            [] => ruby.qnil().as_value(),
+            [ip] => *ip,
+            ips => ruby.ary_new_from_values(ips).as_value(),
+        };
+        let value = lookup(ruby, ip)?;
+        // Check after the lookup, which can run Ruby code, so nothing can end
+        // the batch between this check and the push.
+        if !block_running.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                "get_many block called after get_many returned",
+            ));
+        }
+        ruby.get_inner(block_results).push(value)?;
+        Ok(ruby.qnil().as_value())
+    });
+
+    let outcome = ips.funcall_with_block::<_, _, Value>("each", (), block);
+    running.store(false, Ordering::Release);
+    outcome?;
+    Ok(results)
 }
 
 fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {

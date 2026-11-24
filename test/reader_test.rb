@@ -740,6 +740,60 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_many_raises_stop_iteration_from_enumerable_input
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      return enum_for(:each) unless block
+
+      block.call('81.2.69.142')
+      raise StopIteration, 'input ran out'
+    end
+
+    error = assert_raises(StopIteration) { reader.get_many(stream) }
+    assert_equal 'input ran out', error.message
+
+    error = assert_raises(StopIteration) { reader.get_many_path(stream, %w[country iso_code]) }
+    assert_equal 'input ran out', error.message
+
+    reader.close
+  end
+
+  def test_get_many_propagates_errors_from_enumerable_input
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      block.call('81.2.69.142')
+      raise IOError, 'input failed'
+    end
+
+    assert_raises(IOError) { reader.get_many(stream) }
+    assert_raises(IOError) { reader.get_many_path(stream, %w[country iso_code]) }
+
+    reader.close
+  end
+
+  def test_get_many_block_cannot_be_called_after_it_returns
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    saved_block = nil
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      saved_block = block
+      block.call('81.2.69.142')
+    end
+
+    assert_equal [reader.get('81.2.69.142')], reader.get_many(stream)
+    assert_raises(RuntimeError) { saved_block.call('1.1.1.1') }
+
+    reader.close
+  end
+
   def test_get_many_path
     skip 'Test database not found' unless File.exist?(test_db_path)
 

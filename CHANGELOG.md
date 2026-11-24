@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointers.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
 
+### Fixed
+
+- `get_many` and `get_many_path` now raise a `StopIteration` that a non-Array
+  input raises from its `each`. Previously they treated it as the end of the
+  input and returned a short result.
+
 ## [0.7.0] - 2026-09-12
 
 ### Changed
