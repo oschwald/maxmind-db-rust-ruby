@@ -638,8 +638,10 @@ struct BatchState<F> {
     error: Mutex<Option<OpaqueError>>,
 }
 
-const ERR_BATCH_FINISHED: &str = "get_many block called after the batch lookup returned";
-const ERR_BATCH_REENTERED: &str = "get_many block called while it was already running";
+const ERR_BATCH_FINISHED: &str =
+    "the block that get_many or get_many_path passed to each was called after it returned";
+const ERR_BATCH_REENTERED: &str =
+    "the block that get_many or get_many_path passed to each was called while already running";
 
 /// Calls `ips.each` with a native block and collects `lookup` of each yielded
 /// value.
