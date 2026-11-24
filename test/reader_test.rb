@@ -2,6 +2,7 @@
 
 require 'rbconfig'
 require 'test_helper'
+require 'fileutils'
 require 'timeout'
 require 'tmpdir'
 
@@ -539,6 +540,30 @@ class ReaderTest < Minitest::Test
     assert(networks.all? { |net| net.start_with?('214.') })
 
     reader.close
+  end
+
+  def test_abandoned_external_enumerator_releases_database
+    skip 'Test database not found' unless File.exist?(test_db_path)
+    skip 'Requires /proc/self/maps' unless File.readable?('/proc/self/maps')
+
+    Dir.mktmpdir do |dir|
+      db_path = File.join(dir, 'abandoned-enumerator.mmdb')
+      FileUtils.cp(test_db_path, db_path)
+      mapped = -> { File.readlines('/proc/self/maps').count { |line| line.include?(db_path) } }
+
+      readers = 20
+      readers.times do |index|
+        reader = MaxMind::DB::Rust::Reader.new(db_path)
+        enumerator = index.even? ? reader.each : reader.each('214.0.0.0/8')
+        enumerator.next
+        reader.close
+      end
+      5.times { GC.start }
+
+      # Before the fix every abandoned enumerator kept its map. Allow a few
+      # survivors for conservative stack scanning.
+      assert_operator mapped.call, :<, readers / 4
+    end
   end
 
   def test_iterator_within_ipv4_network_string

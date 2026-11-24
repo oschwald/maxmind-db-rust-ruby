@@ -156,6 +156,69 @@ impl ReaderWithin<'_> {
     }
 }
 
+self_cell::self_cell!(
+    /// A `ReaderWithin` together with the `ReaderSource` it borrows from.
+    struct OwnedWithin {
+        owner: Arc<ReaderSource>,
+
+        #[covariant]
+        dependent: ReaderWithin,
+    }
+);
+
+/// Iteration state for `Reader#each`, owned by a Ruby object.
+///
+/// An external enumerator runs `each` in a Fiber. When the caller stops early,
+/// Ruby frees the Fiber without unwinding its native stack, so anything Rust
+/// owns on that stack is never dropped. Keeping the database handle and the
+/// iterator in a Ruby object lets the garbage collector drop them instead.
+#[magnus::wrap(class = "MaxMind::DB::Rust::Reader::NetworkIterator", free_immediately)]
+struct NetworkIterator {
+    iter: Mutex<OwnedWithin>,
+}
+
+impl NetworkIterator {
+    fn new(source: Arc<ReaderSource>, network: IpNetwork) -> Result<Self, MaxMindDbError> {
+        let iter = OwnedWithin::try_new(source, |source| source.within(network))?;
+        Ok(Self {
+            iter: Mutex::new(iter),
+        })
+    }
+
+    /// Advances one network. The lock is released before calling into Ruby.
+    fn next_entry(
+        &self,
+        ruby: &magnus::Ruby,
+        ipaddr_class: RClass,
+    ) -> Result<Option<(Value, Value)>, Error> {
+        let result = {
+            let mut iter = self.iter.lock().map_err(|_| {
+                Error::new(
+                    ruby.exception_runtime_error(),
+                    "Database iteration failed: iterator lock poisoned",
+                )
+            })?;
+            iter.with_dependent_mut(|_, iter| iter.next())
+        };
+
+        match result {
+            None => Ok(None),
+            Some(Ok((network, data))) => {
+                let ipaddr = ipaddr_class.funcall::<_, _, Value>("new", (network.to_string(),))?;
+                Ok(Some((ipaddr, data.into_value())))
+            }
+            Some(Err(MaxMindDbError::InvalidDatabase { .. }))
+            | Some(Err(MaxMindDbError::Decoding { .. }))
+            | Some(Err(MaxMindDbError::ResourceLimit { .. }))
+            | Some(Err(MaxMindDbError::Io(_))) => Err(invalid_database_exception(ERR_BAD_DATA)),
+            Some(Err(e)) => Err(Error::new(
+                ruby.exception_runtime_error(),
+                format!("Database iteration failed: {}", e),
+            )),
+        }
+    }
+}
+
 #[inline]
 // prefix_len_for_ip_network uses 0 as a sentinel for ip.is_ipv4() && network.is_ipv6().
 // In this case, 0 is not a real prefix length; it signals an IPv4-in-IPv6 mapping path,
@@ -351,19 +414,20 @@ impl Reader {
     fn get_many(&self, ips: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
+        // Each lookup loads the reader itself so no guard is held while
+        // calling into Ruby (see NetworkIterator).
+        self.get_reader(&ruby)?;
 
         if let Ok(ip_array) = RArray::try_convert(ips) {
             return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
                 let ip = ip_array.entry::<Value>(index as isize)?;
-                self.lookup_ip_value(&ruby, reader, ip)
+                self.lookup_ip_value(&ruby, ip)
             }));
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        let reader = Arc::clone(reader);
+        // The batch keeps its own handle, not a guard, while `each` runs.
+        let reader = self.load_reader_arc(&ruby)?;
         let ip_version = self.ip_version.load(Ordering::Relaxed);
         collect_each(&ruby, ips, move |ruby, ip| {
             let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
@@ -374,9 +438,9 @@ impl Reader {
     fn get_many_path(&self, ips: Value, path: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
+        // Each lookup loads the reader itself so no guard is held while
+        // calling into Ruby (see NetworkIterator).
+        self.get_reader(&ruby)?;
 
         let owned_path = self.parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
@@ -384,12 +448,13 @@ impl Reader {
         if let Ok(ip_array) = RArray::try_convert(ips) {
             return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
                 let ip = ip_array.entry::<Value>(index as isize)?;
-                self.lookup_ip_path_value(&ruby, reader, ip, &path_elements)
+                self.lookup_ip_path_value(&ruby, ip, &path_elements)
             }));
         }
 
         ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        let reader = Arc::clone(reader);
+        // The batch keeps its own handle, not a guard, while `each` runs.
+        let reader = self.load_reader_arc(&ruby)?;
         let ip_version = self.ip_version.load(Ordering::Relaxed);
         collect_each(&ruby, ips, move |ruby, ip| {
             let parsed_ip = parse_lookup_ip_for_version(ip, ip_version, ruby)?;
@@ -473,37 +538,19 @@ impl Reader {
             }
         });
 
-        let mut iter = reader
-            .within(network)
+        let iter = NetworkIterator::new(Arc::clone(reader), network)
             .map_err(|e| invalid_database_exception(&format!("Failed to iterate: {}", e)))?;
+        let iter = ruby.obj_wrap(iter);
+        // Nothing Rust owns may stay on this stack while yielding (see
+        // NetworkIterator). The Ruby object above owns the iteration state.
+        drop(guard);
+
         // Get IPAddr class
         let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
 
-        // Iterate over all networks
-        while let Some(result) = iter.next() {
-            match result {
-                Ok((network, data)) => {
-                    // Convert IpNetwork to IPAddr
-                    let ip_str = network.to_string();
-                    let ipaddr = ipaddr_class.funcall::<_, _, Value>("new", (ip_str,))?;
-
-                    // Yield [network, data] to block
-                    let values = (ipaddr, data.into_value());
-                    ruby.yield_values::<(Value, Value), Value>(values)?;
-                }
-                Err(MaxMindDbError::InvalidDatabase { .. })
-                | Err(MaxMindDbError::Decoding { .. })
-                | Err(MaxMindDbError::ResourceLimit { .. })
-                | Err(MaxMindDbError::Io(_)) => {
-                    return Err(invalid_database_exception(ERR_BAD_DATA));
-                }
-                Err(e) => {
-                    return Err(Error::new(
-                        ruby.exception_runtime_error(),
-                        format!("Database iteration failed: {}", e),
-                    ));
-                }
-            }
+        // Iterate over all networks, yielding [network, data] to the block
+        while let Some(values) = iter.next_entry(ruby, ipaddr_class)? {
+            ruby.yield_values::<(Value, Value), Value>(values)?;
         }
 
         Ok(ruby.qnil().as_value())
@@ -577,6 +624,13 @@ impl Reader {
         Ok(guard)
     }
 
+    /// Like `get_reader`, but returns an owned handle instead of a guard.
+    fn load_reader_arc(&self, ruby: &magnus::Ruby) -> Result<Arc<ReaderSource>, Error> {
+        self.reader
+            .load_full()
+            .ok_or_else(|| Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB))
+    }
+
     #[inline]
     fn parse_lookup_ip(&self, ip_address: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
         let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
@@ -599,30 +653,32 @@ impl Reader {
     }
 
     #[inline]
-    fn lookup_ip_value(
-        &self,
-        ruby: &magnus::Ruby,
-        reader: &ReaderSource,
-        ip: Value,
-    ) -> Result<Value, Error> {
+    fn lookup_ip_value(&self, ruby: &magnus::Ruby, ip: Value) -> Result<Value, Error> {
         let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
-        lookup_result_to_value(ruby, reader.lookup(parsed_ip), "Database lookup failed")
+        let result = {
+            let guard = self.get_reader(ruby)?;
+            guard.as_ref().as_ref().unwrap().lookup(parsed_ip)
+        };
+        lookup_result_to_value(ruby, result, "Database lookup failed")
     }
 
     #[inline]
     fn lookup_ip_path_value(
         &self,
         ruby: &magnus::Ruby,
-        reader: &ReaderSource,
         ip: Value,
         path_elements: &[PathElement<'_>],
     ) -> Result<Value, Error> {
         let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
-        lookup_result_to_value(
-            ruby,
-            reader.lookup_path(parsed_ip, path_elements),
-            "Database lookup failed",
-        )
+        let result = {
+            let guard = self.get_reader(ruby)?;
+            guard
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .lookup_path(parsed_ip, path_elements)
+        };
+        lookup_result_to_value(ruby, result, "Database lookup failed")
     }
 
     fn parse_path(
@@ -1286,6 +1342,10 @@ pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {
     reader_class.define_method("closed", magnus::method!(Reader::closed, 0))?;
     reader_class.define_method("inspect", magnus::method!(Reader::inspect, 0))?;
     reader_class.define_method("each", magnus::method!(Reader::each, -1))?;
+
+    // Internal holder for Reader#each state; not meant to be used directly.
+    let iterator_class = reader_class.define_class("NetworkIterator", ruby.class_object())?;
+    iterator_class.undef_default_alloc_func();
 
     let enumerable = ruby.class_object().const_get::<_, RModule>("Enumerable")?;
     reader_class.include_module(enumerable)?;
