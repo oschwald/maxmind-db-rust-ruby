@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reader or releases the GVL.
   Ruby conversion methods no longer run while the path cache lock is held.
 
+### Fixed
+
+- `Metadata#search_tree_size` no longer wraps to a wrong value, such as 0,
+  for databases whose search tree is 4 GiB or larger. It is now computed in
+  64 bits.
+
 ## [0.7.0] - 2026-09-12
 
 ### Changed

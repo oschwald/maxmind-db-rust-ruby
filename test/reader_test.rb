@@ -338,6 +338,7 @@ class ReaderTest < Minitest::Test
     assert_kind_of Hash, metadata.description
     assert_kind_of Integer, metadata.node_byte_size
     assert_kind_of Integer, metadata.search_tree_size
+    assert_equal metadata.node_count * metadata.node_byte_size, metadata.search_tree_size
 
     reader.close
   end
