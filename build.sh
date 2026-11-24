@@ -36,18 +36,25 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "Setting RUSTFLAGS=$RUSTFLAGS for macOS"
 fi
 
-cargo build --release
+cargo build --release --locked
 cd ../..
 
 # Copy to lib directory
 mkdir -p lib/maxmind/db
 
-# With workspace Cargo.toml, artifacts are in the workspace target/ directory
 # Handle platform-specific library extensions
-if [ "$(uname)" = "Darwin" ]; then
-    cp target/release/libmaxmind_db_rust.dylib lib/maxmind/db/maxmind_db_rust.bundle
+target_dir=ext/maxmind_db_rust/target/release
+case "$(uname)" in
+Darwin)
+    cp "$target_dir/libmaxmind_db_rust.dylib" lib/maxmind/db/maxmind_db_rust.bundle
     echo "✓ Build complete! Extension is at lib/maxmind/db/maxmind_db_rust.bundle"
-else
-    cp target/release/libmaxmind_db_rust.so lib/maxmind/db/maxmind_db_rust.so
+    ;;
+MINGW* | MSYS* | CYGWIN*)
+    cp "$target_dir/maxmind_db_rust.dll" lib/maxmind/db/maxmind_db_rust.so
     echo "✓ Build complete! Extension is at lib/maxmind/db/maxmind_db_rust.so"
-fi
+    ;;
+*)
+    cp "$target_dir/libmaxmind_db_rust.so" lib/maxmind/db/maxmind_db_rust.so
+    echo "✓ Build complete! Extension is at lib/maxmind/db/maxmind_db_rust.so"
+    ;;
+esac

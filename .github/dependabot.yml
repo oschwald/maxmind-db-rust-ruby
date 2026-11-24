@@ -1,8 +1,8 @@
 version: 2
 updates:
-  # Rust workspace dependencies, including transitive dependencies in Cargo.lock
+  # Rust dependencies, including transitive dependencies in Cargo.lock
   - package-ecosystem: "cargo"
-    directory: "/"
+    directory: "/ext/maxmind_db_rust"
     schedule:
       interval: "weekly"
     cooldown:

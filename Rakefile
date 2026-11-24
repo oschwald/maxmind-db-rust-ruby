@@ -43,8 +43,7 @@ end
 
 desc 'Clean build artifacts'
 task :clean do
-  # With workspace Cargo.toml, clean from the workspace root
-  sh 'cargo clean' if Dir.exist?('target')
+  sh 'cargo clean --manifest-path ext/maxmind_db_rust/Cargo.toml' if Dir.exist?('ext/maxmind_db_rust/target')
   rm_f 'lib/maxmind/db/maxmind_db_rust.so'
   rm_f 'lib/maxmind/db/maxmind_db_rust.bundle'
   rm_rf 'pkg'

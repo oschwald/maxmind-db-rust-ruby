@@ -19,3 +19,8 @@ maxminddb = "0.33.0"
 memmap2 = "0.9"
 rustc-hash = "2.1"
 serde = "1.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

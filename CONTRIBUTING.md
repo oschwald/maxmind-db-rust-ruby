@@ -59,11 +59,13 @@ This will enable the pre-commit hook that runs `precious lint` on staged files b
 bundle exec rake compile
 ```
 
-This will:
+This runs `build.sh`, which:
 
-1. Run `extconf.rb` to generate the Makefile
-2. Compile the Rust code using rb-sys
-3. Place the compiled extension in `lib/maxmind/db/`
+1. Runs `cargo build --release --locked` in `ext/maxmind_db_rust`
+2. Copies the compiled extension into `lib/maxmind/db/`
+
+`extconf.rb` is only used when the gem is installed from source and when
+building the native gems in CI.
 
 ### Clean Build
 
@@ -75,16 +77,19 @@ bundle exec rake clean
 bundle exec rake clobber compile
 ```
 
-### Development Build (Debug)
+### Rust Dependencies
 
-The default rake task builds in release mode. For faster compile times during development:
+`ext/maxmind_db_rust/Cargo.lock` is committed and shipped in the source gem,
+and builds use `--locked`. After changing dependencies in
+`ext/maxmind_db_rust/Cargo.toml`, run `cargo update -p <crate>` (or
+`cargo build`) in `ext/maxmind_db_rust` and commit the updated lockfile.
+
+### Rust Unit Tests
 
 ```bash
-# Set environment variable for debug builds
-CARGO_PROFILE=dev bundle exec rake compile
+cd ext/maxmind_db_rust
+cargo test --locked
 ```
-
-Note: Debug builds are significantly slower at runtime but compile faster.
 
 ## Running Tests
 
@@ -193,10 +198,16 @@ cargo fmt -- --check
 ```
 maxmind-db-rust-ruby/
 ├── ext/maxmind_db_rust/          # Rust extension code
-│   ├── Cargo.toml                # Rust dependencies
-│   ├── extconf.rb                # Ruby build configuration
+│   ├── Cargo.toml                # Rust dependencies and release profile
+│   ├── Cargo.lock                # Locked dependency versions
+│   ├── extconf.rb                # Build configuration for source installs
 │   └── src/
-│       └── lib.rs                # Main Rust implementation
+│       ├── lib.rs                # Extension entry point and shared constants
+│       ├── reader.rs             # Reader class and lookups
+│       ├── decoder.rs            # Decoding database values to Ruby objects
+│       ├── metadata.rs           # Metadata class
+│       ├── path.rs               # Path lookup support
+│       └── initialization.rs     # Ruby module and class setup
 ├── lib/                          # Ruby integration layer
 │   └── maxmind/
 │       └── db/
@@ -227,7 +238,7 @@ maxmind-db-rust-ruby/
    ```
 
 2. **Make your changes**:
-   - Rust code: `ext/maxmind_db_rust/src/lib.rs`
+   - Rust code: `ext/maxmind_db_rust/src/`
    - Ruby wrapper: `lib/maxmind/db/rust.rb`
    - Tests: Add tests in `test/` directory
 
