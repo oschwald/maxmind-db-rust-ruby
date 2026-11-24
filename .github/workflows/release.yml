@@ -19,6 +19,39 @@ permissions:
   contents: read
 
 jobs:
+  # Run the test workflow before publishing a release
+  test:
+    name: Test
+    if: github.event_name == 'release'
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
+  # Check that the release tag matches the gemspec version
+  check-version:
+    name: Check release tag matches gem version
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare tag and gemspec version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(sed -n -E "s/^[[:space:]]*s\.version[[:space:]]*=[[:space:]]*'([^']+)'.*/\1/p" maxmind-db-rust.gemspec)"
+          if [ -z "$version" ]; then
+            echo "::error::Could not read s.version from maxmind-db-rust.gemspec"
+            exit 1
+          fi
+          if [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "::error::Release tag $RELEASE_TAG does not match gemspec version $version (expected v$version)"
+            exit 1
+          fi
+          echo "Release tag $RELEASE_TAG matches gemspec version $version"
+
   # Build native gems for each platform
   build-native-gems:
     name: Build native gem for ${{ matrix.platform }}
@@ -98,7 +131,7 @@ jobs:
   release:
     name: Release gems to RubyGems.org
     runs-on: ubuntu-latest
-    needs: [build-native-gems, build-source-gem]
+    needs: [test, check-version, build-native-gems, build-source-gem]
     if: github.event_name == 'release'
     environment: RubyGems
 
@@ -134,7 +167,36 @@ jobs:
       - name: Publish gems to RubyGems.org
         run: |
           set -euo pipefail
+          failed=()
           for gem in all-gems/*.gem; do
+            if ! read -r name version platform < <(
+              ruby -rrubygems/package -e 'spec = Gem::Package.new(ARGV[0]).spec; puts [spec.name, spec.version, spec.platform].join(" ")' "$gem"
+            ); then
+              echo "::error::Could not read the gem spec from $gem"
+              failed+=("$gem")
+              continue
+            fi
+            status="$(curl -sS --retry 3 --retry-delay 5 -o /dev/null -w '%{http_code}' \
+              "https://rubygems.org/api/v2/rubygems/${name}/versions/${version}.json?platform=${platform}" || true)"
+            case "$status" in
+              200)
+                echo "Skipping $gem: ${name} ${version} (${platform}) is already on RubyGems.org"
+                continue
+                ;;
+              404) ;;
+              *)
+                echo "::error::Could not check whether $gem is already on RubyGems.org (HTTP $status)"
+                failed+=("$gem")
+                continue
+                ;;
+            esac
             echo "Publishing $gem"
-            gem push "$gem"
+            if ! gem push "$gem"; then
+              echo "::error::Failed to publish $gem"
+              failed+=("$gem")
+            fi
           done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Failed to publish: ${failed[*]}"
+            exit 1
+          fi

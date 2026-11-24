@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_call:
 
 # Cancel superseded runs for the same pull request. Other events get a
 # unique group so they never cancel each other.
@@ -48,7 +49,13 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
+            target/
           key: ${{ runner.os }}-ruby-${{ matrix.ruby }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Run Rust unit tests
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: ext/maxmind_db_rust
+        run: cargo test --locked
 
       - name: Compile extension
         run: bundle exec rake compile
@@ -62,10 +69,37 @@ jobs:
       - name: Run all tests
         run: bundle exec rake test
 
+  test-windows:
+    name: Test Ruby ${{ matrix.ruby }} on windows-latest
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.3", "3.4", "4.0"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Set up Ruby and Rust
+        uses: oxidize-rb/actions/setup-ruby-and-rust@ec90b4aa48795518d79be3f5cc478d1d7ccd02a8 # v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          cargo-cache: true
+
+      - name: Compile extension
+        shell: bash
+        run: bash build.sh
+
+      - name: Run all tests
+        run: bundle exec rake test
+
   official-parity:
     name: Official maxmind-db parity
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   iteration omitting some IPv6 networks and decoding of some four-byte data
   pointers.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
+- The source gem now includes `Cargo.lock` and the release build profile, so
+  installing from source builds the tested dependency versions with the same
+  optimizations as the native gems.
 
 ### Fixed
 
