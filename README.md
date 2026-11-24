@@ -161,6 +161,12 @@ modified or truncated while the reader is alive. To refresh a database, write
 the replacement to a new file and atomically rename it over the old path. Use
 `MODE_MEMORY` if the file lifecycle cannot be controlled this way.
 
+`MODE_MEMORY` reads the file without holding Ruby's global VM lock, so other
+threads keep running while a large database loads. The read cannot be
+interrupted, so a path that never finishes reading, such as a hung network
+mount, blocks the opening thread (and `Timeout` or `Thread#kill` on it) until
+the read returns.
+
 ### Accessing Metadata
 
 ```ruby

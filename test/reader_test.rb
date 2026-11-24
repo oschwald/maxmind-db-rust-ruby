@@ -2,6 +2,7 @@
 
 require 'rbconfig'
 require 'test_helper'
+require 'timeout'
 require 'tmpdir'
 
 class ReaderTest < Minitest::Test
@@ -1033,7 +1034,9 @@ class ReaderTest < Minitest::Test
     assert_operator operations.sum, :>, 0
   end
 
-  def test_close_during_concurrent_verify
+  # Each verify of the small test database is quick, so this mostly covers
+  # close landing between verify calls rather than in the middle of one.
+  def test_verify_from_threads_while_closing
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     [MaxMind::DB::Rust::MODE_MMAP, MaxMind::DB::Rust::MODE_MEMORY].each do |mode|
@@ -1067,7 +1070,17 @@ class ReaderTest < Minitest::Test
 
   # Opening a FIFO blocks until a writer opens it. The writer is a Ruby
   # thread, so the open only finishes if the reader releases the GVL while it
-  # opens and reads the file.
+  # opens and reads the file. A regression would block the whole Ruby process,
+  # so the check runs in a child process that is killed after a deadline.
+  MEMORY_OPEN_FIFO_SCRIPT = <<~RUBY
+    require 'maxmind/db/rust'
+    fifo, db_path = ARGV
+    writer = Thread.new { File.binwrite(fifo, File.binread(db_path)) }
+    reader = MaxMind::DB::Rust::Reader.new(fifo, mode: MaxMind::DB::Rust::MODE_MEMORY)
+    writer.join
+    exit(reader.get('81.2.69.142').dig('country', 'iso_code') == 'GB' ? 0 : 1)
+  RUBY
+
   def test_memory_mode_open_lets_other_threads_run
     skip 'Test database not found' unless File.exist?(test_db_path)
     skip 'FIFOs are not supported on this platform' if Gem.win_platform? || !File.respond_to?(:mkfifo)
@@ -1075,21 +1088,21 @@ class ReaderTest < Minitest::Test
     Dir.mktmpdir do |dir|
       fifo = File.join(dir, 'db.fifo')
       File.mkfifo(fifo)
-      # If the GVL is held, the writer thread never runs. This process then
-      # opens and closes the FIFO so the test fails instead of hanging.
-      watchdog = Process.spawn(RbConfig.ruby, '-e', 'sleep 10; File.open(ARGV[0], "w") {}', fifo)
+      lib_dir = File.expand_path('../lib', __dir__)
+      pid = Process.spawn(RbConfig.ruby, '-I', lib_dir, '-e', MEMORY_OPEN_FIFO_SCRIPT, fifo, test_db_path)
 
-      writer = Thread.new { File.binwrite(fifo, File.binread(test_db_path)) }
-      reader = MaxMind::DB::Rust::Reader.new(fifo, mode: MaxMind::DB::Rust::MODE_MEMORY)
-      writer.join
+      status = begin
+        Timeout.timeout(10) { Process.wait2(pid).last }
+      rescue Timeout::Error
+        nil
+      end
 
-      assert_equal 'GB', reader.get('81.2.69.142').dig('country', 'iso_code')
-      reader.close
+      refute_nil status, 'MODE_MEMORY open blocked other Ruby threads'
+      assert_predicate status, :success?
     ensure
-      writer&.kill
-      if watchdog
-        Process.kill('KILL', watchdog)
-        Process.wait(watchdog)
+      if pid && status.nil?
+        Process.kill('KILL', pid)
+        Process.wait(pid)
       end
     end
   end
