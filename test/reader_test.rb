@@ -815,6 +815,29 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_many_lookup_error_wins_over_later_input_errors
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ensure_raises = Object.new
+    ensure_raises.define_singleton_method(:each) do |&block|
+      block.call('not an ip')
+    ensure
+      raise IOError, 'input cleanup failed'
+    end
+    other_thread = Object.new
+    other_thread.define_singleton_method(:each) do |&block|
+      Thread.new { block.call('not an ip') }.join
+    end
+
+    [ensure_raises, other_thread].each do |stream|
+      error = assert_raises(ArgumentError) { reader.get_many(stream) }
+      assert_match(/not an ip/, error.message)
+    end
+
+    reader.close
+  end
+
   def test_get_many_path
     skip 'Test database not found' unless File.exist?(test_db_path)
 

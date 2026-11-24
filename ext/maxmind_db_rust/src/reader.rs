@@ -689,6 +689,11 @@ where
                 ERR_BATCH_FINISHED,
             ));
         }
+        // An earlier lookup failed and `each` kept going. Skip the work; the
+        // batch already fails.
+        if lock_ignoring_poison(&state.error).is_some() {
+            return ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
+        }
         let Some(mut lookup) = lock_ignoring_poison(&state.lookup).take() else {
             return Err(Error::new(
                 ruby.exception_runtime_error(),
@@ -747,17 +752,35 @@ where
 
     // The closures hold these only as `Opaque`, which the garbage collector
     // doesn't see, so keep them on this frame's stack until `each` is done.
-    std::hint::black_box((block, error_values, tag));
+    gc_guard(&results);
+    gc_guard(&error_values);
+    gc_guard(&tag);
+    gc_guard(&block);
 
     state.running.store(false, Ordering::Release);
     drop(lock_ignoring_poison(&state.lookup).take());
     let lookup_error = lock_ignoring_poison(&state.error).take();
 
-    outcome?;
-    if let Some(err) = lookup_error {
-        return Err(OpaqueError::into_error_with(err, ruby));
+    match (outcome, lookup_error) {
+        // A jump such as `break` or `throw` from the input still wins.
+        (Err(err), _) if err.value().is_none() => Err(err),
+        // The lookup error wins over what `each` raised after it, such as an
+        // `ensure` that raises, or UncaughtThrowError when the block ran on
+        // another thread or fiber than the `catch`.
+        (_, Some(err)) => Err(OpaqueError::into_error_with(err, ruby)),
+        (Err(err), None) => Err(err),
+        (Ok(_), None) => Ok(results),
     }
-    Ok(results)
+}
+
+/// Keeps `value` in this frame's memory up to this point, like Ruby's
+/// `RB_GC_GUARD`, so the garbage collector's stack scan finds it.
+#[inline(always)]
+fn gc_guard<T: Copy>(value: &T) {
+    // SAFETY: `value` is a valid reference to an initialized `T`.
+    unsafe {
+        std::ptr::read_volatile(value);
+    }
 }
 
 fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
