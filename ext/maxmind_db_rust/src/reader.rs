@@ -539,17 +539,35 @@ impl Reader {
         path: RArray,
         hash: u64,
     ) -> Result<Option<Arc<[OwnedPathElement]>>, Error> {
-        let cache = match self.path_cache.lock() {
-            Ok(cache) => cache,
-            Err(_) => return Ok(None),
+        // Comparing a candidate can call Ruby `to_str` or `to_int` methods,
+        // which may reenter this reader or release the GVL. Collect the
+        // candidates and release the lock before comparing them so that no
+        // Ruby code runs while the mutex is held. The first candidate is kept
+        // separately so the usual case does not allocate.
+        let (first, rest) = {
+            let cache = match self.path_cache.lock() {
+                Ok(cache) => cache,
+                Err(_) => return Ok(None),
+            };
+
+            let mut first = None;
+            let mut rest = Vec::new();
+            for entry in cache
+                .iter()
+                .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
+            {
+                if first.is_none() {
+                    first = Some(entry.elements.clone());
+                } else {
+                    rest.push(entry.elements.clone());
+                }
+            }
+            (first, rest)
         };
 
-        for entry in cache
-            .iter()
-            .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
-        {
-            if path_matches_cached(path, entry.elements.as_ref())? {
-                return Ok(Some(entry.elements.clone()));
+        for candidate in first.into_iter().chain(rest) {
+            if path_matches_cached(path, candidate.as_ref())? {
+                return Ok(Some(candidate));
             }
         }
 

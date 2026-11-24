@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointers.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
 
+### Fixed
+
+- `Reader#get_path` no longer deadlocks when a path element defines `to_str`
+  or `to_int` and that method calls back into the reader or releases the GVL.
+  Ruby conversion methods no longer run while the path cache lock is held.
+
 ## [0.7.0] - 2026-09-12
 
 ### Changed
