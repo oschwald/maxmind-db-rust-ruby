@@ -11,7 +11,7 @@ class GcCompactionTest < Minitest::Test
   # array must stay at the same address across compaction. This runs in a
   # child process because a stale handle crashes the VM instead of failing.
   def test_string_cache_survives_compaction
-    skip 'GC compaction is not supported' unless GC.respond_to?(:verify_compaction_references)
+    skip 'GC compaction is not supported' unless GC.respond_to?(:compact)
     skip 'Test database not found' unless File.exist?(test_db_path)
 
     lib_dir = File.expand_path('../lib', __dir__)
