@@ -15,6 +15,7 @@ use ipnetwork::IpNetwork;
 use magnus::{
     error::{Error, OpaqueError},
     prelude::*,
+    rb_sys::{protect, AsRawValue, FromRawValue},
     scan_args::get_kwargs,
     scan_args::scan_args,
     typed_data::Obj,
@@ -1168,35 +1169,31 @@ fn interpolated_arg_error(ruby: &magnus::Ruby, prefix: &str, value: Value, suffi
     }
 }
 
-/// Convert a database path argument the way Ruby's `File.open` does: call
-/// `to_path` when the object has it (`Pathname`, `File`), then require a
-/// String.
+/// Convert a database path argument the way Ruby's `File.open` does, including
+/// `to_path`, the encoding and the check for null bytes.
 fn database_path(database: Value, ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
-    let database = if database.respond_to("to_path", false)? {
-        database.funcall::<_, _, Value>("to_path", ())?
-    } else {
-        database
-    };
-    let path = RString::try_convert(database)?;
-    // SAFETY: the bytes are copied before Ruby can mutate or free the string.
-    let bytes = unsafe { path.as_slice() }.to_vec();
-    if bytes.contains(&0) {
-        return Err(Error::new(
-            ruby.exception_arg_error(),
-            "string contains null byte",
-        ));
-    }
-    path_from_bytes(bytes, path)
+    // SAFETY: `rb_get_path` is called with a live VALUE and returns a String.
+    // `protect` catches anything it raises or throws.
+    let path = unsafe { Value::from_raw(protect(|| rb_sys::rb_get_path(database.as_raw()))?) };
+    path_from_string(RString::try_convert(path)?, ruby)
 }
 
 #[cfg(unix)]
-fn path_from_bytes(bytes: Vec<u8>, _path: RString) -> Result<PathBuf, Error> {
+fn path_from_string(path: RString, _ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
     use std::os::unix::ffi::OsStringExt;
+
+    // macOS file names are UTF-8, and Ruby converts the path before it opens
+    // the file.
+    #[cfg(target_os = "macos")]
+    let path = path.conv_enc(_ruby.utf8_encoding())?;
+
+    // SAFETY: the bytes are copied before Ruby can mutate or free the string.
+    let bytes = unsafe { path.as_slice() }.to_vec();
     Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
 }
 
 #[cfg(not(unix))]
-fn path_from_bytes(_bytes: Vec<u8>, path: RString) -> Result<PathBuf, Error> {
+fn path_from_string(path: RString, _ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
     Ok(PathBuf::from(path.to_string()?))
 }
 
@@ -1215,12 +1212,7 @@ fn open_database_mmap(path: &Path) -> Result<ReaderSource, Error> {
     // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
     // requires callers not to modify or truncate the mapped file while this
     // reader is alive. Database updates should atomically replace the path.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
-        Error::new(
-            ruby.exception_io_error(),
-            format!("Failed to memory-map database file: {}", e),
-        )
-    })?;
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| io_error(&ruby, &e, path))?;
     let reader = MaxMindReader::from_source(mmap).map_err(|_| {
         invalid_database_exception(&format!(
             "Error opening database file ({}). Is this a valid MaxMind DB file?",
@@ -1304,9 +1296,7 @@ fn open_database_file(path: &Path, ruby: &magnus::Ruby) -> Result<File, Error> {
 fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, path: &Path) -> Error {
     #[cfg(unix)]
     if let Some(code) = err.raw_os_error() {
-        if let Some(error) = system_call_error(ruby, code, path) {
-            return error;
-        }
+        return system_call_error(ruby, code, path);
     }
 
     let errno_name = match err.kind() {
@@ -1327,15 +1317,14 @@ fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, path: &Path) -> Error {
 /// `SystemCallError.new(path, code)`, which Ruby turns into the `Errno`
 /// subclass for that code.
 #[cfg(unix)]
-fn system_call_error(ruby: &magnus::Ruby, code: i32, path: &Path) -> Option<Error> {
-    let class = ruby
-        .class_object()
-        .const_get::<_, RClass>("SystemCallError")
-        .ok()?;
-    let exception = class
-        .new_instance((path.display().to_string(), code))
-        .ok()?;
-    Exception::from_value(exception).map(Error::from)
+fn system_call_error(ruby: &magnus::Ruby, code: i32, path: &Path) -> Error {
+    let exception = ruby
+        .exception_system_call_error()
+        .new_instance((path.display().to_string(), code));
+    match exception {
+        Ok(exception) => Error::from(exception),
+        Err(error) => error,
+    }
 }
 
 fn errno_error(ruby: &magnus::Ruby, name: &str, path: &Path) -> Error {

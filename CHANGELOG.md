@@ -38,10 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Reader` now matches the `maxmind-db` gem in several more calls:
   - `Reader.new` accepts a `Pathname` or any object with `to_path`, and its
     options as a positional Hash as well as keywords.
+  - `Reader.new` converts the path as `File.open` does. On Linux, a path that is
+    not in UTF-8 is no longer converted to UTF-8 unless
+    `Encoding.default_internal` is set, and a UTF-16 path raises
+    `Encoding::CompatibilityError`.
   - `Reader` can be subclassed. `new` returns an instance of the subclass and
     calls its `initialize`.
-  - Errors opening the database file raise the matching `Errno` exception, such
-    as `Errno::EACCES` or `Errno::EISDIR`, instead of `IOError`.
+  - Errors opening or memory-mapping the database file raise the matching
+    `Errno` exception, such as `Errno::EACCES` or `Errno::EISDIR`, instead of
+    `IOError`.
   - Invalid IP addresses raise `IPAddr::InvalidAddressError`, a subclass of
     `ArgumentError`. Lookups accept CIDR strings such as `"1.2.3.4/32"` and
     scoped IPv6 addresses such as `"fe80::1%eth0"`, as `IPAddr.new` does.

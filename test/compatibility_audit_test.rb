@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'fileutils'
 require 'open3'
 require 'pathname'
 require 'rbconfig'
@@ -101,8 +102,10 @@ class CompatibilityAuditTest < Minitest::Test
   end
 
   def test_paths_with_null_bytes_are_rejected
-    error = assert_raises(ArgumentError) { MaxMind::DB::Rust::Reader.new("#{test_db_path}\0") }
-    assert_equal 'string contains null byte', error.message
+    path = "#{test_db_path}\0"
+    expected = assert_raises(ArgumentError) { File.open(path) }
+    error = assert_raises(ArgumentError) { MaxMind::DB::Rust::Reader.new(path) }
+    assert_equal expected.message, error.message
   end
 
   def test_options_accept_a_positional_hash
@@ -223,6 +226,83 @@ class CompatibilityAuditTest < Minitest::Test
       end
       assert_includes error.message, TEST_DATA_DIR
     end
+  end
+
+  def test_file_that_cannot_be_mapped_raises_errno
+    skip 'Requires a Linux /dev/null' unless RUBY_PLATFORM.include?('linux')
+
+    error = assert_raises(Errno::ENODEV) { MaxMind::DB::Rust::Reader.new(File::NULL) }
+    assert_includes error.message, File::NULL
+  end
+
+  def test_path_encoding_matches_file_open
+    skip 'Test database not found' unless File.exist?(test_db_path)
+    skip 'Linux passes path bytes to the OS unchanged' unless RUBY_PLATFORM.include?('linux')
+
+    Dir.mktmpdir do |dir|
+      utf8 = File.join(dir, "caf\u00e9.mmdb")
+      FileUtils.cp(test_db_path, utf8)
+      # A child process, because the test runner may set the internal encoding.
+      script = <<~RUBY
+        Encoding.default_internal = nil
+        $LOAD_PATH.unshift(#{File.expand_path('../lib', __dir__).dump})
+        require 'maxmind/db/rust'
+        utf8 = #{utf8.dump}
+        latin1 = utf8.encode('ISO-8859-1')
+
+        # The encoded bytes are the file name, so this is a different file.
+        [File.method(:open), MaxMind::DB::Rust::Reader.method(:new)].each do |open|
+          open.call(latin1)
+          raise 'no error'
+        rescue Errno::ENOENT
+          nil
+        end
+
+        File.binwrite(latin1, File.binread(utf8))
+        MaxMind::DB::Rust::Reader.new(latin1).close
+      RUBY
+      _stdout, stderr, status = Open3.capture3(RbConfig.ruby, '-e', script)
+
+      assert_predicate status, :success?, stderr
+    end
+
+    path = test_db_path.encode('UTF-16LE')
+    assert_raises(Encoding::CompatibilityError) { File.open(path) }
+    assert_raises(Encoding::CompatibilityError) { MaxMind::DB::Rust::Reader.new(path) }
+  end
+
+  def test_path_uses_default_internal_encoding_like_file_open
+    skip 'Test database not found' unless File.exist?(test_db_path)
+    skip 'Requires a Linux file system' unless RUBY_PLATFORM.include?('linux')
+
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "caf\u00e9.mmdb")
+      FileUtils.cp(test_db_path, path)
+      script = <<~RUBY
+        $LOAD_PATH.unshift(#{File.expand_path('../lib', __dir__).dump})
+        require 'maxmind/db/rust'
+        path = #{path.dump}.encode('ISO-8859-1')
+        File.open(path).close
+        MaxMind::DB::Rust::Reader.new(path).close
+      RUBY
+      _stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby, '-E', 'UTF-8:UTF-8', '-e', script
+      )
+
+      assert_predicate status, :success?, stderr
+    end
+  end
+
+  def test_private_to_path_is_used_like_file_open
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    path = test_db_path
+    database = Class.new do
+      define_method(:to_path) { path }
+      private :to_path
+    end.new
+
+    MaxMind::DB::Rust::Reader.new(database).close
   end
 
   def test_invalid_ip_raises_ipaddr_invalid_address_error
