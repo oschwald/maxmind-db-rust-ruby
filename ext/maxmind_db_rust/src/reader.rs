@@ -406,13 +406,7 @@ impl Reader {
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
-
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-
-        lookup_result_to_value(&ruby, reader.lookup(parsed_ip), "Database lookup failed")
+        self.lookup_ip_value(&ruby, ip_address)
     }
 
     #[inline]
@@ -423,15 +417,7 @@ impl Reader {
         let owned_path = self.parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-
-        lookup_result_to_value(
-            &ruby,
-            reader.lookup_path(parsed_ip, &path_elements),
-            "Database lookup failed",
-        )
+        self.lookup_path_value(&ruby, parsed_ip, &path_elements)
     }
 
     #[inline]
@@ -440,16 +426,11 @@ impl Reader {
 
         let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-
-        // Perform lookup with prefix
-        lookup_prefix_result_to_array(
-            &ruby,
-            reader.lookup_prefix(parsed_ip),
-            "Database lookup failed",
-        )
+        let result = {
+            let guard = self.get_reader(&ruby)?;
+            guard.as_ref().as_ref().unwrap().lookup_prefix(parsed_ip)
+        };
+        lookup_prefix_result_to_array(&ruby, result, "Database lookup failed")
     }
 
     fn get_many(rb_self: Obj<Self>, ips: Value) -> Result<RArray, Error> {
