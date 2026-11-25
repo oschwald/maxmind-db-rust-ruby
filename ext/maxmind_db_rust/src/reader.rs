@@ -811,10 +811,7 @@ fn validate_lookup_ip_for_version(
     if ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
         // Echo the argument as given, like the official gem, rather than the
         // parsed address, which drops an IPv6 zone and normalizes.
-        Err(Error::new(
-            ruby.exception_arg_error(),
-            ipv6_in_ipv4_error(ip_address),
-        ))
+        Err(ipv6_in_ipv4_error(ruby, ip_address))
     } else {
         Ok(parsed_ip)
     }
@@ -1032,10 +1029,7 @@ fn ipaddr_to_ip(ipaddr: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
     let is_ipv4: bool = ipaddr.funcall("ipv4?", ())?;
     if is_ipv4 {
         let address = u32::try_from(address).map_err(|_| {
-            Error::new(
-                ruby.exception_arg_error(),
-                format!("'{}' does not appear to be an IPv4 address", ipaddr),
-            )
+            interpolated_arg_error(ruby, "'", ipaddr, "' does not appear to be an IPv4 address")
         })?;
         return Ok(IpAddr::V4(Ipv4Addr::from(address)));
     }
@@ -1139,12 +1133,35 @@ fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Erro
     }
 }
 
-/// Generate error message for IPv6 in IPv4-only database
-fn ipv6_in_ipv4_error(ip: Value) -> String {
-    format!(
-        "Error looking up {}. You attempted to look up an IPv6 address in an IPv4-only database.",
-        ip
+/// The error for an IPv6 address in an IPv4-only database.
+fn ipv6_in_ipv4_error(ruby: &magnus::Ruby, ip: Value) -> Error {
+    interpolated_arg_error(
+        ruby,
+        "Error looking up ",
+        ip,
+        ". You attempted to look up an IPv6 address in an IPv4-only database.",
     )
+}
+
+/// An `ArgumentError` whose message is `"#{prefix}#{value}#{suffix}"`.
+///
+/// The message is built the way Ruby string interpolation builds it: a String
+/// is used as is and anything else goes through `to_s`. So, as in the
+/// `maxmind-db` gem, an exception or `throw` from `to_s`, or an
+/// `Encoding::CompatibilityError` from joining the text, is what the caller
+/// gets. Formatting the `Value` with `{}` would instead ignore those and show
+/// `#<Class:0x...>`.
+fn interpolated_arg_error(ruby: &magnus::Ruby, prefix: &str, value: Value, suffix: &str) -> Error {
+    let build = || -> Result<Exception, Error> {
+        let message = ruby.str_new(prefix);
+        message.buf_append(value.to_r_string()?)?;
+        message.cat(suffix);
+        ruby.exception_arg_error().new_instance((message,))
+    };
+    match build() {
+        Ok(exception) => exception.into(),
+        Err(err) => err,
+    }
 }
 
 /// Convert a database path argument the way Ruby's `File.open` does: call

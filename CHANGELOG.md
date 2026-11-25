@@ -61,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `require 'maxmind/db/rust'` no longer raises `LoadError` with the precompiled
   gems. The gem now loads the extension from the Ruby version directory that
   those gems use.
+- The error raised for an IPv6 address in an IPv4-only database, and for an
+  `IPAddr` that claims to be IPv4 but holds a larger address, now builds its
+  message the way the `maxmind-db` gem does. An exception or `throw` from the
+  argument's `to_s` reaches the caller, and the message keeps the text's
+  encoding. Previously such an exception was ignored and the message showed
+  `#<IPAddr:0x...>` instead of the address.
 
 ## [0.7.0] - 2026-09-12
 
