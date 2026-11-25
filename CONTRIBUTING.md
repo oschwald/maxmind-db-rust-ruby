@@ -62,7 +62,9 @@ bundle exec rake compile
 This runs `build.sh`, which:
 
 1. Runs `cargo build --release --locked` in `ext/maxmind_db_rust`
-2. Copies the compiled extension from the workspace `target/` directory into
+2. Removes extensions in Ruby version directories, such as
+   `lib/maxmind/db/3.4/`, which `rust.rb` would load first
+3. Copies the compiled extension from the workspace `target/` directory into
    `lib/maxmind/db/`
 
 `extconf.rb` is only used when the gem is installed from source and when

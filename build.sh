@@ -42,6 +42,10 @@ cd ../..
 # Copy to lib directory
 mkdir -p lib/maxmind/db
 
+# rust.rb prefers an extension in a Ruby version directory, which a local
+# cross-build leaves behind. Remove those so that this build is the one loaded.
+rm -f lib/maxmind/db/*/maxmind_db_rust.{so,bundle}
+
 # With workspace Cargo.toml, artifacts are in the workspace target/ directory
 # Handle platform-specific library extensions
 target_dir=target/release
