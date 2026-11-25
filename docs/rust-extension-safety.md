@@ -23,10 +23,18 @@ must be Rust-owned and thread-safe.
 - an atomically swapped `Arc<ReaderSource>` for the database source,
 - a mutex-protected parsed-path cache containing only Rust-owned strings and
   indexes,
-- the database IP version copied from metadata.
+- an atomically swapped `Arc<Metadata>` with a Rust-owned copy of the database
+  metadata,
+- the database IP version copied from metadata, in an atomic integer.
 
 `Reader` does not store Ruby handles. This is the core invariant behind its
 `Send` implementation.
+
+`Reader` has an allocator that creates an empty reader with no source, and
+`initialize` opens the database and stores the source, metadata and IP version.
+This lets Ruby subclasses override `initialize` and call `super`. An allocated
+reader that was never initialized is in the closed state. `dup` and `clone`
+raise `TypeError` rather than producing an empty copy.
 
 ## Metadata
 
@@ -41,6 +49,9 @@ reader's closed-state representation. Methods load the source through
 `get_reader`; if it is gone, they raise the closed-reader runtime error. A
 method that already loaded the source may finish using that `Arc`, while later
 method calls see the closed state.
+
+`close` leaves the metadata in place, so `Reader#metadata` keeps working after
+`close`, as in the official gem.
 
 ## Memory-Mapped Files
 

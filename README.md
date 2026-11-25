@@ -224,15 +224,15 @@ Create a new Reader instance.
 
 **Parameters:**
 
-- `database` (String): Path to the MaxMind DB file, or database bytes when using `:MODE_PARAM_IS_BUFFER`
-- `options` (Hash): Optional configuration
+- `database` (String or Pathname): Path to the MaxMind DB file, or database bytes when using `:MODE_PARAM_IS_BUFFER`. Any object that responds to `to_path` is accepted as a path.
+- `options` (Hash): Optional configuration, passed as keywords or as a positional Hash
   - `:mode` (Symbol): One of `:MODE_AUTO`, `:MODE_FILE`, `:MODE_MEMORY`, `:MODE_MMAP`, or `:MODE_PARAM_IS_BUFFER`
 
-**Returns:** Reader instance
+**Returns:** Reader instance. `Reader` can be subclassed, and `new` calls the subclass's `initialize`.
 
 **Raises:**
 
-- `Errno::ENOENT`: If the database file does not exist
+- `SystemCallError`: If the database file cannot be opened, for example `Errno::ENOENT`, `Errno::EACCES` or `Errno::EISDIR`
 - `MaxMind::DB::Rust::InvalidDatabaseError`: If the file is not a valid MaxMind DB
 
 #### `get(ip_address)`
@@ -241,12 +241,13 @@ Look up an IP address in the database.
 
 **Parameters:**
 
-- `ip_address` (String or IPAddr): The IP address to look up
+- `ip_address` (String or IPAddr): The IP address to look up. Strings are parsed like `IPAddr.new`, so CIDR strings such as `"1.2.3.4/32"` and scoped IPv6 addresses such as `"fe80::1%eth0"` are accepted.
 
 **Returns:** Hash with the record data, or `nil` if not found
 
 **Raises:**
 
+- `IPAddr::InvalidAddressError`: If the IP address is invalid (a subclass of `ArgumentError`)
 - `ArgumentError`: If looking up IPv6 in an IPv4-only database
 - `MaxMind::DB::Rust::InvalidDatabaseError`: If the database is corrupt
 
@@ -294,7 +295,7 @@ Look up one path for multiple IP addresses.
 
 #### `metadata()`
 
-Get metadata about the database.
+Get metadata about the database. Like the official gem, this still works after `close`.
 
 **Returns:** `MaxMind::DB::Rust::Metadata` instance
 
@@ -378,6 +379,12 @@ Metadata attributes:
 | MODE_MMAP            | ✗                     | ✓                                          |
 | Iterator support     | ✗                     | ✓                                          |
 | Thread-safe          | ✓                     | ✓                                          |
+
+Known differences from the official gem:
+
+- Lookups on a closed reader raise `RuntimeError` rather than `IOError`.
+- Unknown options raise `ArgumentError`. The official gem ignores them.
+- Readers cannot be copied with `dup` or `clone`.
 
 ## Performance
 

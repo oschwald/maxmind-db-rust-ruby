@@ -3,6 +3,8 @@
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 
 require 'minitest/autorun'
+require 'pathname'
+require 'tmpdir'
 
 begin
   require 'maxmind/db'
@@ -71,7 +73,133 @@ class OfficialParityTest < Minitest::Test
     end
   end
 
+  # The tests below cover the API gaps from RG-95: each one runs the same call
+  # against both gems.
+
+  def test_pathname_path_matches_official_gem
+    PATH_MODES.each do |mode_name|
+      with_readers(Pathname.new(city_db_path), mode_name) do |official, rust|
+        assert_same_record official.get('81.2.69.142'), rust.get('81.2.69.142'), mode_name
+      end
+    end
+  end
+
+  def test_positional_options_hash_matches_official_gem
+    official = MaxMind::DB.new(city_db_path, { mode: MaxMind::DB::MODE_MEMORY })
+    rust = MaxMind::DB::Rust::Reader.new(city_db_path, { mode: MaxMind::DB::Rust::MODE_MEMORY })
+
+    assert_same_record official.get('81.2.69.142'), rust.get('81.2.69.142'), 'positional Hash'
+  ensure
+    official&.close
+    rust&.close
+  end
+
+  def test_subclassing_matches_official_gem
+    [MaxMind::DB, MaxMind::DB::Rust::Reader].each do |base|
+      subclass = Class.new(base) do
+        attr_reader :initialized
+
+        def initialize(*)
+          @initialized = :subclass
+          super
+        end
+      end
+
+      reader = subclass.new(city_db_path)
+
+      assert_instance_of subclass, reader, base.name
+      assert_equal :subclass, reader.initialized, base.name
+      reader.close
+    end
+  end
+
+  def test_unreadable_file_error_matches_official_gem
+    skip 'root can read files without read permission' if Process.uid.zero?
+
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, 'unreadable.mmdb')
+      File.binwrite(path, File.binread(city_db_path))
+      File.chmod(0o000, path)
+
+      assert_same_error_class(path, :MODE_FILE, Errno::EACCES)
+    end
+  end
+
+  def test_directory_path_error_matches_official_gem
+    assert_same_error_class(TEST_DATA_DIR, :MODE_FILE, Errno::EISDIR)
+    assert_same_error_class(TEST_DATA_DIR, :MODE_MEMORY, Errno::EISDIR)
+  end
+
+  def test_invalid_ip_error_matches_official_gem
+    with_readers(city_db_path, :MODE_FILE) do |official, rust|
+      ['not-an-ip', '', '1.2.3.256'].each do |ip|
+        official_error = assert_raises(IPAddr::InvalidAddressError) { official.get(ip) }
+        rust_error = assert_raises(IPAddr::InvalidAddressError) { rust.get(ip) }
+
+        assert_equal official_error.message, rust_error.message, ip.inspect
+      end
+    end
+  end
+
+  def test_non_string_ip_error_matches_official_gem
+    with_readers(city_db_path, :MODE_FILE) do |official, rust|
+      [16_909_060, :'81.2.69.142', Object.new].each do |ip|
+        official_error = assert_raises(ArgumentError) { official.get(ip) }
+        rust_error = assert_raises(ArgumentError) { rust.get(ip) }
+
+        assert_equal official_error.class, rust_error.class, ip.inspect
+      end
+    end
+  end
+
+  def test_scoped_ipv6_in_ipv4_database_error_matches_official_gem
+    with_readers(ipv4_db_path, :MODE_FILE) do |official, rust|
+      official_error = assert_raises(ArgumentError) { official.get('fe80::1%eth0') }
+      rust_error = assert_raises(ArgumentError) { rust.get('fe80::1%eth0') }
+
+      assert_equal official_error.message, rust_error.message
+    end
+  end
+
+  def test_cidr_lookup_matches_official_gem
+    with_readers(city_db_path, :MODE_FILE) do |official, rust|
+      ['81.2.69.142/32', '81.2.69.170/27', '81.2.69.142/26'].each do |ip|
+        assert_same_record official.get(ip), rust.get(ip), ip
+        assert_equal official.get_with_prefix_length(ip), rust.get_with_prefix_length(ip), ip
+      end
+    end
+  end
+
+  def test_scoped_ipv6_lookup_matches_official_gem
+    with_readers(ipv6_db_path, :MODE_FILE) do |official, rust|
+      ['fe80::1%eth0', '::1:ffff:ffff%eth0'].each do |ip|
+        assert_same_record official.get(ip), rust.get(ip), ip
+      end
+    end
+  end
+
+  def test_metadata_after_close_matches_official_gem
+    with_readers(city_db_path, :MODE_FILE) do |official, rust|
+      official.close
+      rust.close
+
+      assert_equal official.metadata.database_type, rust.metadata.database_type
+      assert_equal official.metadata.ip_version, rust.metadata.ip_version
+    end
+  end
+
   private
+
+  def assert_same_error_class(database, mode_name, expected)
+    official_error = assert_raises(expected) do
+      MaxMind::DB.new(database, mode: MaxMind::DB.const_get(mode_name))
+    end
+    rust_error = assert_raises(expected) do
+      MaxMind::DB::Rust::Reader.new(database, mode: MaxMind::DB::Rust.const_get(mode_name))
+    end
+
+    assert_equal official_error.class, rust_error.class, mode_name.to_s
+  end
 
   def assert_same_record(expected, actual, message)
     if expected.nil?
