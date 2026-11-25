@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Metadata#search_tree_size` no longer wraps to a wrong value, such as 0,
   for databases whose search tree is 4 GiB or larger. It is now computed in
   64 bits.
+- Fixed a memory leak where an external enumerator from `Reader#each` that
+  was not run to the end kept the database mapped or in memory after `close`
+  and garbage collection.
 
 ## [0.7.0] - 2026-09-12
 

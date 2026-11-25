@@ -19,4 +19,5 @@ maxminddb = "0.33.0"
 memmap2 = "0.9"
 rb-sys = { version = "0.9", default-features = false }
 rustc-hash = "2.1"
+self_cell = "1.3"
 serde = "1.0"
