@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     calls its `initialize`.
   - Errors opening or memory-mapping the database file raise the matching
     `Errno` exception, such as `Errno::EACCES` or `Errno::EISDIR`, instead of
-    `IOError`.
+    `IOError`. Their messages keep the encoding of the path.
   - Invalid IP addresses raise `IPAddr::InvalidAddressError`, a subclass of
     `ArgumentError`. Lookups accept CIDR strings such as `"1.2.3.4/32"` and
     scoped IPv6 addresses such as `"fe80::1%eth0"`, as `IPAddr.new` does.

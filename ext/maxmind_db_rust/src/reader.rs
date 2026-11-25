@@ -334,10 +334,10 @@ impl Reader {
         if result.is_err() {
             self.initialized.store(false, Ordering::Release);
         }
-        result
+        result.map_err(|err| err.into_error(&ruby))
     }
 
-    fn open(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<(), Error> {
+    fn open(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<(), OpenError> {
         // Accept the options both as keywords and as a positional Hash, like
         // the official gem's `initialize(database, options = {})`.
         let args = scan_args::<(Value,), (Option<Value>,), (), (), RHash, ()>(args)?;
@@ -345,19 +345,19 @@ impl Reader {
         let (positional_options,) = args.optional;
         let options = match positional_options {
             Some(_) if !args.keywords.is_empty() => {
-                return Err(Error::new(
+                return Err(OpenError::Ruby(Error::new(
                     ruby.exception_arg_error(),
                     "wrong number of arguments (given 3, expected 1..2)",
-                ));
+                )));
             }
             // `get_kwargs` removes the keys it reads, so work on a copy rather
             // than emptying the caller's Hash.
             Some(options) => {
                 let Some(options) = try_convert_hash(options, ruby)? else {
-                    return Err(Error::new(
+                    return Err(OpenError::Ruby(Error::new(
                         ruby.exception_type_error(),
                         "options must be a Hash",
-                    ));
+                    )));
                 };
                 // Check the result without naming its class (see try_convert_hash).
                 let copy = options.funcall::<_, _, Value>("dup", ())?;
@@ -1037,7 +1037,13 @@ fn ipaddr_to_ip(ipaddr: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
     let is_ipv4: bool = ipaddr.funcall("ipv4?", ())?;
     if is_ipv4 {
         let address = u32::try_from(address).map_err(|_| {
-            interpolated_arg_error(ruby, "'", ipaddr, "' does not appear to be an IPv4 address")
+            interpolated_error(
+                ruby,
+                ruby.exception_arg_error(),
+                "'",
+                ipaddr,
+                "' does not appear to be an IPv4 address",
+            )
         })?;
         return Ok(IpAddr::V4(Ipv4Addr::from(address)));
     }
@@ -1143,15 +1149,16 @@ fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Erro
 
 /// The error for an IPv6 address in an IPv4-only database.
 fn ipv6_in_ipv4_error(ruby: &magnus::Ruby, ip: Value) -> Error {
-    interpolated_arg_error(
+    interpolated_error(
         ruby,
+        ruby.exception_arg_error(),
         "Error looking up ",
         ip,
         ". You attempted to look up an IPv6 address in an IPv4-only database.",
     )
 }
 
-/// An `ArgumentError` whose message is `"#{prefix}#{value}#{suffix}"`.
+/// An exception of `class` whose message is `"#{prefix}#{value}#{suffix}"`.
 ///
 /// The message is built the way Ruby string interpolation builds it: a String
 /// is used as is and anything else goes through `to_s`. So, as in the
@@ -1159,12 +1166,18 @@ fn ipv6_in_ipv4_error(ruby: &magnus::Ruby, ip: Value) -> Error {
 /// `Encoding::CompatibilityError` from joining the text, is what the caller
 /// gets. Formatting the `Value` with `{}` would instead ignore those and show
 /// `#<Class:0x...>`.
-fn interpolated_arg_error(ruby: &magnus::Ruby, prefix: &str, value: Value, suffix: &str) -> Error {
+fn interpolated_error(
+    ruby: &magnus::Ruby,
+    class: ExceptionClass,
+    prefix: &str,
+    value: Value,
+    suffix: &str,
+) -> Error {
     let build = || -> Result<Exception, Error> {
         let message = ruby.str_new(prefix);
         message.buf_append(value.to_r_string()?)?;
         message.cat(suffix);
-        ruby.exception_arg_error().new_instance((message,))
+        class.new_instance((message,))
     };
     match build() {
         Ok(exception) => exception.into(),
@@ -1172,13 +1185,24 @@ fn interpolated_arg_error(ruby: &magnus::Ruby, prefix: &str, value: Value, suffi
     }
 }
 
+/// A database path, and the Ruby String to show it as in error messages. Only
+/// the String has the encoding.
+struct DatabasePath {
+    path: PathBuf,
+    name: RString,
+}
+
 /// Convert a database path argument the way Ruby's `File.open` does, including
 /// `to_path`, the encoding and the check for null bytes.
-fn database_path(database: Value, ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
+fn database_path(database: Value, ruby: &magnus::Ruby) -> Result<DatabasePath, Error> {
     // SAFETY: `rb_get_path` is called with a live VALUE and returns a String.
     // `protect` catches anything it raises or throws.
-    let path = unsafe { Value::from_raw(protect(|| rb_sys::rb_get_path(database.as_raw()))?) };
-    path_from_string(RString::try_convert(path)?, ruby)
+    let name = unsafe { Value::from_raw(protect(|| rb_sys::rb_get_path(database.as_raw()))?) };
+    let name = RString::try_convert(name)?;
+    Ok(DatabasePath {
+        path: path_from_string(name, ruby)?,
+        name,
+    })
 }
 
 #[cfg(unix)]
@@ -1208,155 +1232,158 @@ fn database_buffer(database: Value) -> Result<Vec<u8>, Error> {
 }
 
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
-fn open_database_mmap(path: &Path) -> Result<ReaderSource, Error> {
-    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-    let file = open_database_file(path, &ruby)?;
-
-    // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
-    // requires callers not to modify or truncate the mapped file while this
-    // reader is alive. Database updates should atomically replace the path.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| io_error(&ruby, &e, path))?;
-    let reader = MaxMindReader::from_source(mmap).map_err(|_| {
-        invalid_database_exception(&format!(
-            "Error opening database file ({}). Is this a valid MaxMind DB file?",
-            path.display()
-        ))
-    })?;
+fn open_database_mmap(database: &DatabasePath) -> Result<ReaderSource, OpenError> {
+    let map_file = || {
+        let file = open_database_file(&database.path)?;
+        // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
+        // requires callers not to modify or truncate the mapped file while this
+        // reader is alive. Database updates should atomically replace the path.
+        unsafe { Mmap::map(&file) }.map_err(FileError::Io)
+    };
+    let mmap = map_file().map_err(|err| OpenError::File(err, database.name))?;
+    let reader =
+        MaxMindReader::from_source(mmap).map_err(|_| OpenError::InvalidDatabase(database.name))?;
 
     Ok(ReaderSource::Mmap(reader))
 }
 
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
-fn open_database_memory(path: &Path) -> Result<ReaderSource, Error> {
-    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-
+fn open_database_memory(database: &DatabasePath) -> Result<ReaderSource, OpenError> {
     // Opening and reading the file can block for a long time, so do it
     // without the GVL and build any Ruby exception afterwards.
+    let path = database.path.as_path();
     let buffer = without_gvl(|| {
-        let mut file = File::open(path).map_err(MemoryReadError::Io)?;
-        // Opening a directory succeeds on Unix; raise Errno::EISDIR up front,
-        // as `open_database_file` does.
-        if file.metadata().map_err(MemoryReadError::Io)?.is_dir() {
-            return Err(MemoryReadError::IsDirectory);
-        }
+        let mut file = open_database_file(path)?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(MemoryReadError::Io)?;
+        file.read_to_end(&mut buffer).map_err(FileError::Io)?;
         Ok(buffer)
     })?
-    .map_err(|err| match err {
-        MemoryReadError::Io(e) => io_error(&ruby, &e, path),
-        MemoryReadError::IsDirectory => errno_error(&ruby, "EISDIR", path),
-    })?;
-
-    reader_from_buffer(
-        buffer,
-        format!(
-            "Error opening database file ({}). Is this a valid MaxMind DB file?",
-            path.display()
-        ),
-    )
-}
-
-fn open_database_buffer(buffer: Vec<u8>) -> Result<ReaderSource, Error> {
-    reader_from_buffer(
-        buffer,
-        "Error opening database from buffer. Is this a valid MaxMind DB file?".to_owned(),
-    )
-}
-
-fn reader_from_buffer(buffer: Vec<u8>, invalid_message: String) -> Result<ReaderSource, Error> {
+    .map_err(|err| OpenError::File(err, database.name))?;
     let reader = MaxMindReader::from_source(buffer)
-        .map_err(|_| invalid_database_exception(invalid_message.as_str()))?;
+        .map_err(|_| OpenError::InvalidDatabase(database.name))?;
 
     Ok(ReaderSource::Memory(reader))
 }
 
-/// Errors from the GVL-free part of `open_database_memory`, converted to Ruby
-/// exceptions once the GVL is held again.
-enum MemoryReadError {
+fn open_database_buffer(buffer: Vec<u8>) -> Result<ReaderSource, Error> {
+    let reader = MaxMindReader::from_source(buffer).map_err(|_| {
+        invalid_database_exception(
+            "Error opening database from buffer. Is this a valid MaxMind DB file?",
+        )
+    })?;
+
+    Ok(ReaderSource::Memory(reader))
+}
+
+/// Opens the file without calling Ruby, so this can run without the GVL.
+fn open_database_file(path: &Path) -> Result<File, FileError> {
+    let file = File::open(path).map_err(FileError::Io)?;
+    // Opening a directory succeeds on Unix, and the error only shows up later
+    // as an unhelpful mmap or read failure. Raise Errno::EISDIR up front, as
+    // the official gem does.
+    if file.metadata().map_err(FileError::Io)?.is_dir() {
+        return Err(FileError::IsDirectory);
+    }
+    Ok(file)
+}
+
+enum FileError {
     Io(std::io::Error),
     IsDirectory,
 }
 
-fn open_database_file(path: &Path, ruby: &magnus::Ruby) -> Result<File, Error> {
-    let file = File::open(path).map_err(|e| io_error(ruby, &e, path))?;
-    // Opening a directory succeeds on Unix, and the error only shows up later
-    // as an unhelpful mmap or read failure. Raise Errno::EISDIR up front, as
-    // the official gem does.
-    let is_dir = file
-        .metadata()
-        .map_err(|e| io_error(ruby, &e, path))?
-        .is_dir();
-    if is_dir {
-        return Err(errno_error(ruby, "EISDIR", path));
+/// Why opening a database failed, with the String to show the path as.
+///
+/// Creating an exception can call Ruby, which can abandon the stack. So this
+/// waits until the file is closed and the reader can be initialized again.
+enum OpenError {
+    Ruby(Error),
+    File(FileError, RString),
+    InvalidDatabase(RString),
+}
+
+impl From<Error> for OpenError {
+    fn from(err: Error) -> Self {
+        Self::Ruby(err)
     }
-    Ok(file)
+}
+
+impl OpenError {
+    fn into_error(self, ruby: &magnus::Ruby) -> Error {
+        match self {
+            Self::Ruby(err) => err,
+            Self::File(FileError::Io(err), name) => io_error(ruby, &err, name),
+            Self::File(FileError::IsDirectory, name) => errno_error(ruby, "EISDIR", name),
+            Self::InvalidDatabase(name) => interpolated_error(
+                ruby,
+                invalid_database_class(),
+                "Error opening database file (",
+                name.as_value(),
+                "). Is this a valid MaxMind DB file?",
+            ),
+        }
+    }
 }
 
 /// Convert an I/O error into the matching `Errno` exception, so callers that
 /// rescue `SystemCallError` see the same classes as with the official gem.
 /// Errors without an OS error code fall back to `IOError`.
-fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, path: &Path) -> Error {
-    #[cfg(unix)]
-    if let Some(code) = err.raw_os_error() {
-        return system_call_error(ruby, code, path);
-    }
-
-    let errno_name = match err.kind() {
-        std::io::ErrorKind::NotFound => Some("ENOENT"),
-        std::io::ErrorKind::PermissionDenied => Some("EACCES"),
-        std::io::ErrorKind::IsADirectory => Some("EISDIR"),
-        _ => None,
-    };
-    match errno_name {
-        Some(name) => errno_error(ruby, name, path),
-        None => Error::new(
+fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, name: RString) -> Error {
+    let Some(code) = err.raw_os_error() else {
+        return interpolated_error(
+            ruby,
             ruby.exception_io_error(),
-            format!("{} - {}", err, path.display()),
-        ),
-    }
-}
-
-/// `SystemCallError.new(path, code)`, which Ruby turns into the `Errno`
-/// subclass for that code.
-#[cfg(unix)]
-fn system_call_error(ruby: &magnus::Ruby, code: i32, path: &Path) -> Error {
+            &format!("{err} - "),
+            name.as_value(),
+            "",
+        );
+    };
+    // Ruby turns this into the `Errno` subclass for the code.
     let exception = ruby
         .exception_system_call_error()
-        .new_instance((path.display().to_string(), code));
+        .new_instance((name, errno_from_os_error(code)));
     match exception {
         Ok(exception) => Error::from(exception),
         Err(error) => error,
     }
 }
 
-fn errno_error(ruby: &magnus::Ruby, name: &str, path: &Path) -> Error {
+#[cfg(not(windows))]
+fn errno_from_os_error(code: i32) -> i32 {
+    code
+}
+
+/// Map a Win32 error code to an errno with the function Ruby itself uses.
+#[cfg(windows)]
+fn errno_from_os_error(code: i32) -> i32 {
+    extern "C" {
+        fn rb_w32_map_errno(code: u32) -> std::ffi::c_int;
+    }
+    // SAFETY: Ruby exports this function on Windows. It only reads a table.
+    unsafe { rb_w32_map_errno(code as u32) }
+}
+
+fn errno_error(ruby: &magnus::Ruby, errno_name: &str, name: RString) -> Error {
     let class = ruby
         .class_object()
         .const_get::<_, RModule>("Errno")
-        .and_then(|errno| errno.const_get::<_, RClass>(name));
-    let exception = class.and_then(|class| class.new_instance((path.display().to_string(),)));
-    match exception.map(Exception::from_value) {
-        Ok(Some(exception)) => Error::from(exception),
-        Ok(None) => Error::new(ruby.exception_io_error(), path.display().to_string()),
+        .and_then(|errno| errno.const_get::<_, ExceptionClass>(errno_name));
+    match class.and_then(|class| class.new_instance((name,))) {
+        Ok(exception) => Error::from(exception),
         Err(error) => error,
     }
 }
 
 /// Get the InvalidDatabaseError class
-fn invalid_database_error() -> RClass {
+fn invalid_database_class() -> ExceptionClass {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-    let rust = rust_module(&ruby);
-    rust.const_get::<_, RClass>("InvalidDatabaseError")
+    rust_module(&ruby)
+        .const_get::<_, ExceptionClass>("InvalidDatabaseError")
         .expect("InvalidDatabaseError class should exist")
 }
 
 fn invalid_database_exception(message: &str) -> Error {
-    Error::new(
-        ExceptionClass::from_value(invalid_database_error().as_value())
-            .expect("InvalidDatabaseError should convert to ExceptionClass"),
-        message.to_owned(),
-    )
+    Error::new(invalid_database_class(), message.to_owned())
 }
 
 pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {

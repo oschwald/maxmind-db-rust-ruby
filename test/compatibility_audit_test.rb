@@ -267,8 +267,53 @@ class CompatibilityAuditTest < Minitest::Test
     end
 
     path = test_db_path.encode('UTF-16LE')
-    assert_raises(Encoding::CompatibilityError) { File.open(path) }
-    assert_raises(Encoding::CompatibilityError) { MaxMind::DB::Rust::Reader.new(path) }
+    without_internal_encoding do
+      assert_raises(Encoding::CompatibilityError) { File.open(path) }
+      assert_raises(Encoding::CompatibilityError) { MaxMind::DB::Rust::Reader.new(path) }
+    end
+  end
+
+  def test_open_error_messages_keep_the_path_encoding
+    skip 'Linux passes path bytes to the OS unchanged' unless RUBY_PLATFORM.include?('linux')
+
+    without_internal_encoding do
+      Dir.mktmpdir do |dir|
+        latin1 = File.join(dir, "caf\u00e9.mmdb").encode('ISO-8859-1')
+        modes = OFFICIAL_PATH_MODES.map { |name| MaxMind::DB::Rust.const_get(name) }
+
+        expected = assert_raises(Errno::ENOENT) { File.open(latin1) }
+        modes.each do |mode|
+          error = assert_raises(Errno::ENOENT) { MaxMind::DB::Rust::Reader.new(latin1, mode: mode) }
+          assert_equal expected.message.encoding, error.message.encoding
+          assert_operator error.message, :end_with?, latin1
+        end
+
+        File.binwrite(latin1, 'not a database')
+        modes.each do |mode|
+          error = assert_raises(MaxMind::DB::Rust::InvalidDatabaseError) do
+            MaxMind::DB::Rust::Reader.new(latin1, mode: mode)
+          end
+          assert_includes error.message, latin1
+        end
+
+        Dir.mkdir("#{latin1}.d")
+        modes.each do |mode|
+          error = assert_raises(Errno::EISDIR) { MaxMind::DB::Rust::Reader.new("#{latin1}.d", mode: mode) }
+          assert_operator error.message, :end_with?, "#{latin1}.d"
+        end
+      end
+    end
+  end
+
+  def test_windows_open_errors_are_system_call_errors
+    skip 'Requires Windows' unless Gem.win_platform?
+
+    # ERROR_INVALID_NAME has no matching Rust error kind.
+    OFFICIAL_PATH_MODES.each do |mode_name|
+      assert_raises(Errno::EINVAL, Errno::ENOENT, mode_name.to_s) do
+        MaxMind::DB::Rust::Reader.new('a<b.mmdb', mode: MaxMind::DB::Rust.const_get(mode_name))
+      end
+    end
   end
 
   def test_path_uses_default_internal_encoding_like_file_open
@@ -383,6 +428,18 @@ class CompatibilityAuditTest < Minitest::Test
   end
 
   private
+
+  # The test runner may set the internal encoding, which changes path handling.
+  def without_internal_encoding
+    verbose = $VERBOSE
+    internal = Encoding.default_internal
+    $VERBOSE = nil
+    Encoding.default_internal = nil
+    yield
+  ensure
+    Encoding.default_internal = internal
+    $VERBOSE = verbose
+  end
 
   def test_db_path
     File.join(TEST_DATA_DIR, 'GeoIP2-City-Test.mmdb')
