@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   element defines `to_str` or `to_int` and that method calls back into the
   reader or releases the GVL.
   Ruby conversion methods no longer run while the path cache lock is held.
+- Anything an argument's `to_str`, `to_ary` or `to_int` raises or throws now
+  reaches the caller. Previously it was replaced with an `ArgumentError`, or
+  ignored when another conversion succeeded. Only these are still treated as an
+  argument of the wrong type: a `TypeError`, a number such as `Float::INFINITY`
+  that has no Integer value, and a `Numeric` without `to_i`.
 - `Reader` now matches the `maxmind-db` gem in several more calls:
   - `Reader.new` accepts a `Pathname` or any object with `to_path`, and its
     options as a positional Hash as well as keywords.

@@ -206,6 +206,7 @@ maxmind-db-rust-ruby/
 │   └── src/
 │       ├── lib.rs                # Extension entry point and shared constants
 │       ├── reader.rs             # Reader class and lookups
+│       ├── convert.rs            # Argument type conversion
 │       ├── decoder.rs            # Decoding database values to Ruby objects
 │       ├── metadata.rs           # Metadata class
 │       ├── path.rs               # Path lookup support

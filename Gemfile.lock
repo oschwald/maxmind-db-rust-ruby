@@ -8,6 +8,7 @@ GEM
   remote: https://rubygems.org/
   specs:
     ast (2.4.3)
+    bigdecimal (4.0.1)
     drb (2.2.3)
     json (3.1.0)
     language_server-protocol (3.17.0.6)
@@ -68,6 +69,7 @@ PLATFORMS
   x86_64-linux
 
 DEPENDENCIES
+  bigdecimal (~> 4.0)
   maxmind-db-rust!
   minitest (~> 6.0)
   parallel (< 2.0)

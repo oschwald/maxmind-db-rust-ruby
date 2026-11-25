@@ -16,6 +16,11 @@ must be Rust-owned and thread-safe.
 - If bytes or strings are needed after the current expression, copy them into
   owned Rust values first.
 
+- Do not drop an `Err` from a call that can run Ruby code. It may hold a
+  pending `throw` or thread kill, and calling Ruby again before returning it
+  crashes the interpreter. Use `try_convert_optional` when an argument may be
+  one of several types.
+
 ## Reader State
 
 `Reader` stores:

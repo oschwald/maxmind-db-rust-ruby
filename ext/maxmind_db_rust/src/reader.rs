@@ -1,4 +1,5 @@
 use crate::{
+    convert::{try_convert_array, try_convert_hash, try_convert_optional},
     decoder::RubyDecodedValue,
     gvl::without_gvl,
     metadata::Metadata,
@@ -338,7 +339,7 @@ impl Reader {
     fn open(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<(), Error> {
         // Accept the options both as keywords and as a positional Hash, like
         // the official gem's `initialize(database, options = {})`.
-        let args = scan_args::<(Value,), (Option<RHash>,), (), (), RHash, ()>(args)?;
+        let args = scan_args::<(Value,), (Option<Value>,), (), (), RHash, ()>(args)?;
         let (database,) = args.required;
         let (positional_options,) = args.optional;
         let options = match positional_options {
@@ -350,7 +351,19 @@ impl Reader {
             }
             // `get_kwargs` removes the keys it reads, so work on a copy rather
             // than emptying the caller's Hash.
-            Some(options) => options.funcall::<_, _, RHash>("dup", ())?,
+            Some(options) => {
+                let Some(options) = try_convert_hash(options, ruby)? else {
+                    return Err(Error::new(
+                        ruby.exception_type_error(),
+                        "options must be a Hash",
+                    ));
+                };
+                // Check the result without naming its class (see try_convert_hash).
+                let copy = options.funcall::<_, _, Value>("dup", ())?;
+                RHash::from_value(copy).ok_or_else(|| {
+                    Error::new(ruby.exception_type_error(), "options.dup must be a Hash")
+                })?
+            }
             None => args.keywords,
         };
         let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(options, &[], &["mode"])?;
@@ -442,7 +455,7 @@ impl Reader {
         // calling into Ruby (see NetworkIterator).
         reader_self.get_reader(&ruby)?;
 
-        if let Ok(ip_array) = RArray::try_convert(ips) {
+        if let Some(ip_array) = try_convert_array(ips, &ruby)? {
             return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
                 let ip = ip_array.entry::<Value>(index as isize)?;
                 reader_self.lookup_ip_value(&ruby, ip)
@@ -472,7 +485,7 @@ impl Reader {
         let owned_path = reader_self.parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
-        if let Ok(ip_array) = RArray::try_convert(ips) {
+        if let Some(ip_array) = try_convert_array(ips, &ruby)? {
             return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
                 let ip = ip_array.entry::<Value>(index as isize)?;
                 reader_self.lookup_ip_path_value(&ruby, ip, &path_elements)
@@ -598,7 +611,7 @@ impl Reader {
         };
 
         // Accept both String and IPAddr objects
-        let network_str = if let Ok(s) = RString::try_convert(network_arg) {
+        let network_str = if let Some(s) = try_convert_optional::<RString>(network_arg, ruby)? {
             s.to_string()?
         } else {
             let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
@@ -610,8 +623,8 @@ impl Reader {
             } else {
                 // Try to call to_s on it (works for other objects)
                 let to_s_result: Value = network_arg.funcall("to_s", ())?;
-                RString::try_convert(to_s_result)
-                    .map_err(|_| {
+                try_convert_optional::<RString>(to_s_result, ruby)?
+                    .ok_or_else(|| {
                         Error::new(
                             ruby.exception_arg_error(),
                             "Network parameter must be a String or IPAddr",
@@ -728,7 +741,7 @@ impl Reader {
         let path = path_array(path, ruby)?;
         let hash = path_cache_hash(path, ruby)?;
 
-        if let Some(cached) = self.cached_path(path, hash)? {
+        if let Some(cached) = self.cached_path(path, hash, ruby)? {
             return Ok(cached);
         }
 
@@ -741,6 +754,7 @@ impl Reader {
         &self,
         path: RArray,
         hash: u64,
+        ruby: &magnus::Ruby,
     ) -> Result<Option<Arc<[OwnedPathElement]>>, Error> {
         // Comparing a candidate can call Ruby `to_str` or `to_int` methods,
         // which may reenter this reader or release the GVL. Collect the
@@ -769,7 +783,7 @@ impl Reader {
         };
 
         for candidate in first.into_iter().chain(rest) {
-            if path_matches_cached(path, candidate.as_ref())? {
+            if path_matches_cached(path, candidate.as_ref(), ruby)? {
                 return Ok(Some(candidate));
             }
         }
