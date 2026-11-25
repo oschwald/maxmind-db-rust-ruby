@@ -47,6 +47,7 @@ task :clean do
   sh 'cargo clean' if Dir.exist?('target')
   rm_f 'lib/maxmind/db/maxmind_db_rust.so'
   rm_f 'lib/maxmind/db/maxmind_db_rust.bundle'
+  rm_f Dir['lib/maxmind/db/*/maxmind_db_rust.{so,bundle}']
   rm_rf 'pkg'
   rm_rf 'tmp'
 end

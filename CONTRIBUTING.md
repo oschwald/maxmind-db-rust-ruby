@@ -462,6 +462,7 @@ We follow [Semantic Versioning](https://semver.org/):
      - `arm64-darwin` (macOS Apple Silicon)
      - `x64-mingw-ucrt` (Windows)
      - `x86_64-linux-musl` (Alpine Linux)
+   - Install and load each native gem on every supported Ruby version
    - Build a source gem (fallback for unsupported platforms)
    - Push all gems to RubyGems.org
 

@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed a memory leak where an external enumerator from `Reader#each` that
   was not run to the end kept the database mapped or in memory after `close`
   and garbage collection.
+- `require 'maxmind/db/rust'` no longer raises `LoadError` with the precompiled
+  gems. The gem now loads the extension from the Ruby version directory that
+  those gems use.
 
 ## [0.7.0] - 2026-09-12
 
