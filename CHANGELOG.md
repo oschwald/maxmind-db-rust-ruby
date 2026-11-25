@@ -71,7 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input raises from its `each`. Previously they treated it as the end of the
   input and returned a short result. A lookup error, such as an invalid IP,
   now stops a non-Array input's `each` and is raised even if that `each`
-  rescues it.
+  rescues it. If a lookup never finishes, such as because `each` catches a
+  `throw` from it, they raise `RuntimeError` instead of returning a short
+  result.
 - `Metadata#search_tree_size` no longer wraps to a wrong value, such as 0,
   for databases whose search tree is 4 GiB or larger. It is now computed in
   64 bits.

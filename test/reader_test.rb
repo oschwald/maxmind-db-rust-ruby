@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 require 'rbconfig'
+require 'open3'
 require 'test_helper'
 require 'fileutils'
 require 'timeout'
 require 'tmpdir'
 
 class ReaderTest < Minitest::Test
+  include ChildProcessHelper
+
   TEST_DATA_DIR = File.join(__dir__, 'data', 'MaxMind-DB', 'test-data')
 
   def test_reader_class_exists
@@ -1175,7 +1178,7 @@ class ReaderTest < Minitest::Test
       -> { reader.get_many_path(stream, ['country']) },
     ].each do |call|
       error = assert_raises(RuntimeError) { call.call }
-      assert_match(/already running/, error.message)
+      assert_match(/before an earlier lookup finished/, error.message)
     end
 
     reader.close
@@ -1213,6 +1216,7 @@ class ReaderTest < Minitest::Test
     reader = MaxMind::DB::Rust::Reader.new(test_db_path)
     looking_up = Queue.new
     rescued = nil
+    returned = false
     thread = nil
     stream = Object.new
     stream.define_singleton_method(:each) do |&block|
@@ -1223,17 +1227,283 @@ class ReaderTest < Minitest::Test
       end
       thread = Thread.new do
         block.call(ip)
+        returned = true
       rescue Exception => e # rubocop:disable Lint/RescueException
         rescued = e
       end
-      looking_up.pop
+      looking_up.pop(timeout: 30) || raise(Minitest::Assertion, 'the lookup did not start')
     end
 
-    assert_empty reader.get_many(stream)
-    thread.kill
-    thread.join
+    begin
+      error = assert_raises(RuntimeError) { reader.get_many(stream) }
+      assert_match(/before a lookup finished/, error.message)
+    ensure
+      thread&.kill
+      thread&.join
+      reader.close
+    end
 
     assert_nil rescued
+    refute returned
+  end
+
+  def test_get_many_fails_when_each_survives_an_interrupted_lookup
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    throwing_ip = IPAddr.new('81.2.69.142')
+    throwing_ip.define_singleton_method(:to_i) { throw :done }
+    killed_ip = IPAddr.new('81.2.69.142')
+    killed_ip.define_singleton_method(:to_i) { Thread.current.kill }
+    caught_throw = Object.new
+    caught_throw.define_singleton_method(:each) do |&block|
+      catch(:done) { block.call(throwing_ip) }
+    end
+    killed_thread = Object.new
+    killed_thread.define_singleton_method(:each) do |&block|
+      Thread.new { block.call(killed_ip) }.join
+    end
+    continues = Object.new
+    continues.define_singleton_method(:each) do |&block|
+      catch(:done) { block.call(throwing_ip) }
+      block.call('1.1.1.1')
+    end
+
+    [caught_throw, killed_thread, continues].each do |stream|
+      assert_raises(RuntimeError) { reader.get_many(stream) }
+      assert_raises(RuntimeError) { reader.get_many_path(stream, ['country']) }
+    end
+
+    reader.close
+  end
+
+  # Creating the error can call Ruby, which can abandon the call.
+  def test_reader_can_be_initialized_after_an_abandoned_open_error
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    lib_dir = File.expand_path('../lib', __dir__)
+    script = <<~RUBY
+      $LOAD_PATH.unshift(#{lib_dir.dump})
+      require 'maxmind/db/rust'
+
+      MaxMind::DB::Rust::InvalidDatabaseError.define_method(:initialize) do |*args|
+        Fiber.yield :suspended
+        super(*args)
+      end
+
+      %i[MODE_MMAP MODE_MEMORY].each do |mode|
+        reader = MaxMind::DB::Rust::Reader.allocate
+        suspended = Fiber.new { reader.send(:initialize, #{__FILE__.dump}, mode: mode) }.resume
+        raise "\#{mode}: \#{suspended}" unless suspended == :suspended
+
+        reader.send(:initialize, #{test_db_path.dump})
+        raise 'no record' unless reader.get('81.2.69.142')
+      end
+    RUBY
+    status, _stdout, stderr = run_child(script)
+
+    assert_predicate status, :success?, stderr
+  end
+
+  # Building the reentry error runs Ruby code, so the first lookup can finish
+  # before the error exists. Patching RuntimeError makes that happen every time.
+  def test_get_many_fails_when_reentry_is_detected_late
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    # The batch returns before the reentry error exists.
+    status, _stdout, stderr = run_child(late_reentry_script(after_lookup: '', error: 'before a lookup finished'))
+
+    assert_predicate status, :success?, stderr
+  end
+
+  def test_failed_batch_starts_no_lookup_while_its_error_is_built
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    after_lookup = <<~RUBY
+      late_ip = IPAddr.new('1.1.1.1')
+      late_ip.define_singleton_method(:to_i) { abort 'started a lookup' }
+      block.call(late_ip)
+    RUBY
+    script = late_reentry_script(after_lookup:, error: 'before an earlier lookup finished')
+    status, _stdout, stderr = run_child(script)
+
+    assert_predicate status, :success?, stderr
+  end
+
+  def test_kept_block_does_not_keep_the_batch_payload
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    blocks = []
+    count = 40
+    GC.start
+    before = ObjectSpace.each_object(MaxMind::DB::Rust::Reader).count
+    count.times { run_batch_that_keeps_its_block(blocks) }
+    GC.start
+    kept = ObjectSpace.each_object(MaxMind::DB::Rust::Reader).count - before
+
+    # The conservative stack scan may keep a few of them.
+    assert_operator kept, :<, count / 2
+    GC.verify_compaction_references(toward: :empty, expand_heap: true) if GC.respond_to?(:compact)
+
+    blocks.each { |block| assert_raises(RuntimeError) { block.call('1.1.1.1') } }
+  end
+
+  def test_lookup_that_outlives_its_batch_keeps_its_objects
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    looking_up = Queue.new
+    resume = Queue.new
+    result = Queue.new
+    worker = nil
+    run = lambda do
+      stream = Object.new
+      stream.define_singleton_method(:each) do |&block|
+        ip = IPAddr.new('81.2.69.142')
+        ip.define_singleton_method(:to_i) do
+          looking_up << true
+          resume.pop
+          super()
+        end
+        worker = Thread.new do
+          block.call(ip)
+          result << :returned
+        rescue StandardError => e
+          result << e
+        end
+        looking_up.pop(timeout: 30) || raise(Minitest::Assertion, 'the lookup did not start')
+      end
+      reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+      assert_raises(RuntimeError) { reader.get_many_path(stream, %w[country iso_code]) }
+    end
+    begin
+      run.call
+      3.times { GC.start }
+      GC.verify_compaction_references(toward: :empty, expand_heap: true) if GC.respond_to?(:compact)
+      resume << true
+      error = result.pop(timeout: 30)
+
+      assert_instance_of RuntimeError, error
+      assert_match(/after it returned/, error.message)
+    ensure
+      worker&.kill
+      worker&.join
+    end
+  end
+
+  def test_get_many_errors_on_another_thread_keep_their_class
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    rescued = []
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      ip = IPAddr.new('81.2.69.142')
+      ip.define_singleton_method(:to_i) do
+        Thread.new do
+          block.call('1.1.1.1')
+        rescue StandardError => e
+          rescued << e
+        end.join
+        super()
+      end
+      block.call(ip)
+    end
+
+    assert_raises(RuntimeError) { reader.get_many(stream) }
+    assert_equal [RuntimeError], rescued.map(&:class)
+
+    rescued.clear
+    stream.define_singleton_method(:each) do |&block|
+      2.times do
+        Thread.new do
+          block.call('not an ip')
+        rescue StandardError => e
+          rescued << e
+        end.join
+      end
+    end
+
+    assert_raises(IPAddr::InvalidAddressError) { reader.get_many(stream) }
+    assert_equal [IPAddr::InvalidAddressError] * 2, rescued.map(&:class)
+    reader.close
+  end
+
+  def test_get_many_yields_match_enumerator_next
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    [[], ['81.2.69.142', '1.1.1.1'], [['81.2.69.142']]].each do |values|
+      stream = Object.new
+      stream.define_singleton_method(:each) { |&block| block.call(*values) }
+
+      # None of these is an address, so each must raise as `get` does.
+      expected = values.empty? ? nil : Enumerator.new { |y| y.yield(*values) }.next
+      error = assert_raises(StandardError) { reader.get(expected) }
+      assert_raises(error.class) { reader.get_many(stream) }
+    end
+
+    reader.close
+  end
+
+  def test_abandoned_batches_release_their_state
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      block.call('81.2.69.142')
+      Fiber.yield
+    end
+    ip = IPAddr.new('81.2.69.142')
+    ip.define_singleton_method(:to_i) { Fiber.yield }
+
+    count = 50
+    suspending_string = Class.new(String) do
+      def split(*)
+        Fiber.yield
+        super
+      end
+    end
+    inputs = [stream, [ip], ['1.1.1.1', ip], [ip].each, [suspending_string.new('81.2.69.142/32')]]
+    inputs.each do |input|
+      GC.start
+      # Otherwise GC could free paths from the last input between the counts.
+      GC.disable
+      before = ObjectSpace.each_object(MaxMind::DB::Rust::ReaderBatchPath).count
+      fibers = Array.new(count) { Fiber.new { reader.get_many_path(input, %w[country iso_code]) }.tap(&:resume) }
+      suspended = ObjectSpace.each_object(MaxMind::DB::Rust::ReaderBatchPath).count - before
+      GC.enable
+
+      # A path that is not in a Ruby object would leak without being counted.
+      assert_operator suspended, :>=, count
+
+      fibers.clear
+      GC.start
+      kept = ObjectSpace.each_object(MaxMind::DB::Rust::ReaderBatchPath).count - before
+
+      # The conservative stack scan may keep a few of them.
+      assert_operator kept, :<, count / 2
+    ensure
+      GC.enable
+    end
+
+    reader.close
+  end
+
+  # Subclasses look up constants in Reader before they look at the top level.
+  def test_reader_does_not_hide_top_level_constants
+    assert_empty MaxMind::DB::Rust::Reader.constants(false)
+  end
+
+  # The path moves to a Ruby object at the first address that is not a String.
+  def test_get_many_path_with_mixed_addresses
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ips = ['81.2.69.142', IPAddr.new('81.2.69.142'), '1.1.1.1', '81.2.69.142/32', '81.2.69.142']
+    path = %w[country iso_code]
+
+    assert_equal ips.map { |ip| reader.get_path(ip, path) }, reader.get_many_path(ips, path)
     reader.close
   end
 
@@ -1436,6 +1706,66 @@ class ReaderTest < Minitest::Test
   end
 
   private
+
+  def late_reentry_script(after_lookup:, error:)
+    lib_dir = File.expand_path('../lib', __dir__)
+    <<~RUBY
+      $LOAD_PATH.unshift(#{lib_dir.dump})
+      require 'maxmind/db/rust'
+
+      building = Queue.new
+      batch_returned = Queue.new
+      RuntimeError.class_eval do
+        define_method(:initialize) do |*args|
+          super(*args)
+          if Thread.current[:reentering]
+            building << true
+            batch_returned.pop
+          end
+        end
+      end
+
+      reader = MaxMind::DB::Rust::Reader.new(#{test_db_path.dump})
+      thread = nil
+      stream = Object.new
+      stream.define_singleton_method(:each) do |&block|
+        ip = IPAddr.new('81.2.69.142')
+        ip.define_singleton_method(:to_i) do
+          thread = Thread.new do
+            Thread.current[:reentering] = true
+            block.call('1.1.1.1')
+          rescue StandardError
+            nil
+          end
+          building.pop
+          super()
+        end
+        block.call(ip)
+        #{after_lookup}
+      end
+
+      begin
+        reader.get_many(stream)
+        raise NotImplementedError, 'short result'
+      rescue RuntimeError => e
+        raise unless e.message.include?(#{error.dump})
+      ensure
+        batch_returned << true
+      end
+      thread.join
+    RUBY
+  end
+
+  # A separate method, so that this stack doesn't keep the reader.
+  def run_batch_that_keeps_its_block(blocks)
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      blocks << block
+      block.call('81.2.69.142')
+    end
+    MaxMind::DB::Rust::Reader.new(test_db_path).get_many_path(stream, %w[country iso_code])
+    nil
+  end
 
   # Copies the test database to its own path and yields that path and a
   # lambda counting how many times the copy is mapped into this process.

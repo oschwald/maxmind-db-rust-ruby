@@ -19,7 +19,17 @@ must be Rust-owned and thread-safe.
 - Do not drop an `Err` from a call that can run Ruby code. It may hold a
   pending `throw` or thread kill, and calling Ruby again before returning it
   crashes the interpreter. Use `try_convert_optional` when an argument may be
-  one of several types.
+  one of several types, or `try_convert_array` and `try_convert_hash`.
+- Do not keep a Ruby handle, including one inside a `magnus::Error`, in Rust heap
+  memory while Ruby code can run, unless a stack frame or a `mark` function pins
+  the object. Compaction can move it. Keep an exception in a Ruby array instead.
+- A block can outlive the call that created it, and `define_method` can copy it.
+  magnus keeps the closure of `proc_from_fn` alive with an instance variable that
+  a copy does not have. Use `rb_proc_new` with a Ruby object as its data, as
+  `collect_each` does. Do not use `proc_from_fn` at all with magnus 0.9.3: it
+  frees a closure's data type before Ruby is done with it. A block also keeps the
+  receiver of the method that created it alive, so create it in a method of that
+  object.
 
 ## Reader State
 
@@ -54,9 +64,18 @@ reader's closed-state representation. Methods load the source through
 `get_reader`; if it is gone, they raise the closed-reader runtime error. A
 method that already loaded the source may finish using that `Arc`, while later
 method calls see the closed state. `get_many` and `get_many_path` load the source
-for each address, because no Rust-owned `Arc` may stay on a stack that Ruby can
-abandon. So they raise the closed-reader error if the reader is closed before the
-batch ends. `each` keeps its source in a Ruby object and continues after `close`.
+for each address, so they raise the closed-reader error if the reader is closed
+before the last lookup. If it is closed after that, they return the results.
+`each` keeps its source in a Ruby object and continues after `close`.
+
+Ruby can abandon a Fiber's stack without unwinding it, so anything Rust owns there
+leaks. Lookups and `each` must not have a database source on a stack that calls
+Ruby. `each` and batch lookups keep their state in Ruby objects
+(`NetworkIterator`, `Batch` and `BatchPath` in `reader.rs`).
+
+Some leaks are known. Parsing an argument can leak its own small buffers. `verify`
+and opening in `MODE_MEMORY` can leak the source if a trap handler suspends the
+Fiber after they release the GVL, and the Fiber is then abandoned.
 
 `close` leaves the metadata in place, so `Reader#metadata` keeps working after
 `close`, as in the official gem.

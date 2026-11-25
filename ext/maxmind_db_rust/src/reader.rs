@@ -13,14 +13,17 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::{Error, OpaqueError},
+    block::Proc,
+    error::{Error, ErrorType},
+    gc,
     prelude::*,
-    rb_sys::{protect, AsRawValue, FromRawValue},
+    rb_sys::{catch_unwind, protect, resume_error, AsRawValue, FromRawValue},
     scan_args::get_kwargs,
     scan_args::scan_args,
     typed_data::Obj,
     value::Opaque,
-    Exception, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
+    DataTypeFunctions, Exception, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule,
+    RString, Symbol, TypedData, Value,
 };
 use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
@@ -29,6 +32,7 @@ use std::{
     fs::File,
     io::Read as IoRead,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -176,7 +180,7 @@ self_cell::self_cell!(
 /// iterator in a Ruby object lets the garbage collector drop them instead.
 /// When `each` returns normally, by `break` or by an exception, it releases
 /// the state right away so `close` still frees the database at once.
-#[magnus::wrap(class = "MaxMind::DB::Rust::Reader::NetworkIterator", free_immediately)]
+#[magnus::wrap(class = "MaxMind::DB::Rust::ReaderNetworkIterator", free_immediately)]
 struct NetworkIterator {
     iter: Mutex<Option<OwnedWithin>>,
 }
@@ -450,59 +454,62 @@ impl Reader {
 
     fn get_many(rb_self: Obj<Self>, ips: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
-        let reader_self = &*rb_self;
-
-        // Each lookup loads the reader itself so no guard is held while
-        // calling into Ruby (see NetworkIterator).
-        reader_self.get_reader(&ruby)?;
+        rb_self.get_reader(&ruby)?;
 
         if let Some(ip_array) = try_convert_array(ips, &ruby)? {
-            return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
-                let ip = ip_array.entry::<Value>(index as isize)?;
-                reader_self.lookup_ip_value(&ruby, ip)
-            }));
+            let results = lookup_array(&ruby, ip_array, |ip| rb_self.lookup_ip_value(&ruby, ip));
+            gc_guard(&rb_self);
+            return results;
         }
 
-        ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        // The block holds the Reader object, not the database, so a block that
-        // each keeps (or a stack that is never unwound) can't keep it open.
-        let reader_ref = Opaque::from(rb_self);
-        let results = collect_each(&ruby, ips, move |ruby, ip| {
-            ruby.get_inner(reader_ref).lookup_ip_value(ruby, ip)
-        });
-        // The block holds the Reader only as `Opaque`; keep it on this stack.
-        gc_guard(&rb_self);
-        results
+        collect_each(&ruby, rb_self, ips, None)
     }
 
     fn get_many_path(rb_self: Obj<Self>, ips: Value, path: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
-        let reader_self = &*rb_self;
+        rb_self.get_reader(&ruby)?;
 
-        // Each lookup loads the reader itself so no guard is held while
-        // calling into Ruby (see NetworkIterator).
-        reader_self.get_reader(&ruby)?;
+        let owned_path = rb_self.parse_path(path, &ruby)?;
+        let path = PathWithElements::new(owned_path, |path| path_elements_from_owned_path(path));
 
-        let owned_path = reader_self.parse_path(path, &ruby)?;
-        let path_elements = path_elements_from_owned_path(owned_path.as_ref());
-
-        if let Some(ip_array) = try_convert_array(ips, &ruby)? {
-            return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
-                let ip = ip_array.entry::<Value>(index as isize)?;
-                reader_self.lookup_ip_path_value(&ruby, ip, &path_elements)
-            }));
+        if let Some(ip_array) = RArray::from_value(ips) {
+            // A plain String lookup can't abandon this stack, so the path stays on
+            // it until another kind of address needs Ruby code.
+            let mut stack_path = Some(path);
+            let mut batch_path = None;
+            let results = lookup_array(&ruby, ip_array, |ip| {
+                if let Some(path) = &stack_path {
+                    if let Some(parsed_ip) = rb_self.parse_plain_lookup_ip(ip) {
+                        return rb_self.lookup_path_value(
+                            &ruby,
+                            parsed_ip,
+                            path.borrow_dependent(),
+                        );
+                    }
+                }
+                if let Some(path) = stack_path.take() {
+                    batch_path = Some(ruby.obj_wrap(BatchPath(path)));
+                }
+                let path: &Obj<BatchPath> = batch_path.as_ref().expect("the path was moved above");
+                rb_self.lookup_ip_path_value(&ruby, ip, path.0.borrow_dependent())
+            });
+            gc_guard(&batch_path);
+            gc_guard(&rb_self);
+            return results;
         }
 
-        ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        // See get_many: the block holds the Reader object, not the database.
-        let reader_ref = Opaque::from(rb_self);
-        let results = collect_each(&ruby, ips, move |ruby, ip| {
-            let path_elements = path_elements_from_owned_path(owned_path.as_ref());
-            ruby.get_inner(reader_ref)
-                .lookup_ip_path_value(ruby, ip, &path_elements)
-        });
-        gc_guard(&rb_self);
-        results
+        // Otherwise the garbage collector owns the path (see NetworkIterator).
+        let path = ruby.obj_wrap(BatchPath(path));
+        if let Some(ip_array) = try_convert_array(ips, &ruby)? {
+            let results = lookup_array(&ruby, ip_array, |ip| {
+                rb_self.lookup_ip_path_value(&ruby, ip, path.0.borrow_dependent())
+            });
+            gc_guard(&path);
+            gc_guard(&rb_self);
+            return results;
+        }
+
+        collect_each(&ruby, rb_self, ips, Some(path))
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -712,6 +719,23 @@ impl Reader {
         path_elements: &[PathElement<'_>],
     ) -> Result<Value, Error> {
         let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        self.lookup_path_value(ruby, parsed_ip, path_elements)
+    }
+
+    /// Parses a plain IP address String that this database can look up. Returns
+    /// `None` for anything else. This never calls Ruby.
+    #[inline]
+    fn parse_plain_lookup_ip(&self, ip: Value) -> Option<IpAddr> {
+        parse_plain_ip(ip).filter(|ip| ip.is_ipv4() || self.ip_version.load(Ordering::Relaxed) != 4)
+    }
+
+    #[inline]
+    fn lookup_path_value(
+        &self,
+        ruby: &magnus::Ruby,
+        parsed_ip: IpAddr,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Value, Error> {
         let result = {
             let guard = self.get_reader(ruby)?;
             guard
@@ -813,6 +837,183 @@ impl Reader {
 // while the Ruby VM is active.
 unsafe impl Send for Reader {}
 
+fn lookup_array(
+    ruby: &magnus::Ruby,
+    ips: RArray,
+    mut lookup: impl FnMut(Value) -> Result<Value, Error>,
+) -> Result<RArray, Error> {
+    ruby.ary_try_from_iter((0..ips.len()).map(|index| lookup(ips.entry(index as isize)?)))
+}
+
+type PathElements<'path> = Vec<PathElement<'path>>;
+
+self_cell::self_cell!(
+    /// A parsed path together with the lookup elements that borrow from it.
+    struct PathWithElements {
+        owner: Arc<[OwnedPathElement]>,
+
+        #[covariant]
+        dependent: PathElements,
+    }
+);
+
+/// The path of a `get_many_path` call, owned by a Ruby object so that the
+/// garbage collector frees it if Ruby abandons the call's stack (see
+/// NetworkIterator).
+#[magnus::wrap(class = "MaxMind::DB::Rust::ReaderBatchPath", free_immediately)]
+struct BatchPath(PathWithElements);
+
+/// State of a `get_many` or `get_many_path` call whose input is not an Array.
+///
+/// This is the data of the block that `each` gets. Ruby marks a block's data for
+/// as long as the block can be called. That can be after the call returned, and
+/// also after Ruby abandoned the call's stack.
+#[derive(TypedData)]
+#[magnus(class = "MaxMind::DB::Rust::ReaderBatch", free_immediately, mark)]
+struct Batch {
+    /// Not valid when `running` is false. Use `payload` to get it.
+    payload: Payload,
+    /// Cleared when the call returns.
+    running: AtomicBool,
+    /// Set when a lookup or a reentry failed, before any Ruby code can run.
+    failed: AtomicBool,
+    /// Set while the block runs a lookup, and left set if the lookup never
+    /// finishes, such as because of a `throw` or a thread kill.
+    looking_up: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+struct Payload {
+    reader: Opaque<Obj<Reader>>,
+    path: Option<Opaque<Obj<BatchPath>>>,
+    results: Opaque<RArray>,
+    /// Holds the lookup or reentry exception to raise once `each` has unwound.
+    error_slot: Opaque<RArray>,
+    /// Stops `each` when thrown.
+    tag: Opaque<Value>,
+}
+
+impl Batch {
+    /// Creates the block. This is a Ruby method because a block keeps the receiver
+    /// of the method that created it alive, which must not be the Reader.
+    fn to_proc(rb_self: Obj<Self>) -> Result<Proc, Error> {
+        // SAFETY: `batch_block` has the signature of a block function, and
+        // `rb_self` is a live object. Ruby marks it for as long as the block, or a
+        // method that was defined from the block, exists.
+        let block =
+            protect(|| unsafe { rb_sys::rb_proc_new(Some(batch_block), rb_self.as_raw()) })?;
+        // SAFETY: `rb_proc_new` returns a live Proc.
+        Proc::try_convert(unsafe { Value::from_raw(block) })
+    }
+
+    /// The objects that the block uses, or `None` if the call has returned. The
+    /// caller must keep them on its stack, because the call can return later.
+    fn payload(&self) -> Option<Payload> {
+        self.running.load(Ordering::Acquire).then_some(self.payload)
+    }
+}
+
+impl DataTypeFunctions for Batch {
+    /// Marks, and pins, the payload only while the call runs, so that a block that
+    /// `each` kept doesn't keep the reader and the results alive.
+    fn mark(&self, marker: &gc::Marker) {
+        if let Some(payload) = self.payload() {
+            marker.mark(payload.reader);
+            if let Some(path) = payload.path {
+                marker.mark(path);
+            }
+            marker.mark(payload.results);
+            marker.mark(payload.error_slot);
+            marker.mark(payload.tag);
+        }
+    }
+}
+
+const ERR_BATCH_FINISHED: &str =
+    "the block that get_many or get_many_path passed to each was called after it returned";
+const ERR_BATCH_REENTERED: &str =
+    "the block that get_many or get_many_path passed to each was called before an earlier lookup \
+     finished";
+const ERR_BATCH_UNFINISHED: &str =
+    "each returned to get_many or get_many_path before a lookup finished";
+
+/// Calls `ips.each` with a native block and collects the lookup of each yielded
+/// value.
+///
+/// Iterating with a block, rather than an external enumerator, lets any
+/// exception from `each`, including `StopIteration`, reach the caller instead
+/// of looking like the end of the input.
+///
+/// A lookup error stops the iteration with `throw`, which `each` can't rescue,
+/// and is raised after `each` unwinds. A lookup that never finished is an error
+/// too. So the result can't silently come back short.
+fn collect_each(
+    ruby: &magnus::Ruby,
+    reader: Obj<Reader>,
+    ips: Value,
+    path: Option<Obj<BatchPath>>,
+) -> Result<RArray, Error> {
+    ensure_enumerable(ips, ruby, "ips must be an Array or Enumerable")?;
+
+    let results = ruby.ary_new();
+    let error_slot = ruby.ary_new();
+    let tag: Value = ruby.class_object().new_instance(())?;
+    let payload = Payload {
+        reader: reader.into(),
+        path: path.map(Opaque::from),
+        results: results.into(),
+        error_slot: error_slot.into(),
+        tag: tag.into(),
+    };
+    let batch = ruby.obj_wrap(Batch {
+        payload,
+        running: AtomicBool::new(true),
+        failed: AtomicBool::new(false),
+        looking_up: AtomicBool::new(false),
+    });
+    // Allocating the Batch can run the garbage collector before the Batch marks
+    // the payload.
+    gc_guard(&payload);
+
+    let block: Proc = batch.funcall("to_proc", ())?;
+
+    // This does not use `proc_from_fn`, because magnus 0.9 frees a closure's data
+    // type before Ruby is done with it.
+    let each_args = ruby.ary_new_from_values(&[ips, block.as_value()]);
+    // SAFETY: `call_each` has the signature of a block function, and all values
+    // are live.
+    let outcome = protect(|| unsafe {
+        rb_sys::rb_catch_obj(tag.as_raw(), Some(call_each), each_args.as_raw())
+    });
+    gc_guard(&each_args);
+
+    batch.running.store(false, Ordering::Release);
+    match outcome {
+        // A jump such as `break` or `throw` from the input still wins. So does
+        // an exception such as Interrupt, SystemExit or Timeout's, because the
+        // caller may rescue the lookup error and keep running.
+        Err(err) if !err.is_kind_of(ruby.exception_standard_error()) => Err(err),
+        // The lookup error wins over a StandardError that `each` raised after
+        // it, such as from an `ensure`. An asynchronous StandardError, as from
+        // `Timeout.timeout(1, MyError)`, looks the same as one from an
+        // `ensure`, so it loses too.
+        outcome => match error_slot.entry::<Option<Exception>>(0)? {
+            Some(exception) => Err(exception.into()),
+            None => {
+                outcome?;
+                if batch.looking_up.load(Ordering::Acquire) || batch.failed.load(Ordering::Acquire)
+                {
+                    return Err(Error::new(
+                        ruby.exception_runtime_error(),
+                        ERR_BATCH_UNFINISHED,
+                    ));
+                }
+                Ok(results)
+            }
+        },
+    }
+}
+
 fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {
     if value.respond_to("each", false)? {
         Ok(())
@@ -824,164 +1025,173 @@ fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> 
     }
 }
 
-/// Lookup state shared by the block that `collect_each` passes to `each`.
-struct BatchState<F> {
-    /// Cleared when `collect_each` returns. The block may outlive the call.
-    running: AtomicBool,
-    /// Taken out while a lookup runs, and dropped when the batch ends so a
-    /// kept block doesn't hold the database open.
-    lookup: Mutex<Option<F>>,
-    /// The first lookup or reentry error, raised once `each` has unwound.
-    error: Mutex<Option<OpaqueError>>,
+/// The body of the `catch` in `collect_each`. `each_args` is an Array of the
+/// input and the block.
+unsafe extern "C" fn call_each(
+    _tag: rb_sys::VALUE,
+    each_args: rb_sys::VALUE,
+    _argc: std::ffi::c_int,
+    _argv: *const rb_sys::VALUE,
+    _block: rb_sys::VALUE,
+) -> rb_sys::VALUE {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value, Error> {
+        // SAFETY: `collect_each` keeps the Array alive.
+        let each_args = RArray::try_convert(unsafe { Value::from_raw(each_args) })?;
+        let ips = each_args.entry::<Value>(0)?;
+        let block = each_args.entry::<Proc>(1)?;
+        ips.funcall_with_block::<_, _, Value>("each", (), block)
+    }));
+    match result.and_then(|result| result) {
+        Ok(value) => value.as_raw(),
+        // SAFETY: nothing on this stack needs to be dropped.
+        Err(err) => unsafe { resume_error(err) },
+    }
 }
 
-const ERR_BATCH_FINISHED: &str =
-    "the block that get_many or get_many_path passed to each was called after it returned";
-const ERR_BATCH_REENTERED: &str =
-    "the block that get_many or get_many_path passed to each was called while already running";
-
-/// Calls `ips.each` with a native block and collects `lookup` of each yielded
-/// value.
-///
-/// Iterating with a block, rather than an external enumerator, lets any
-/// exception from `each`, including `StopIteration`, reach the caller instead
-/// of looking like the end of the input.
-///
-/// A lookup error stops the iteration with `throw`, which `each` can't rescue,
-/// and is raised after `each` unwinds, so the result can't silently come back
-/// short.
-///
-/// `each` can keep the block and call it after this returns, so the block owns
-/// what it uses and only appends to `results` while this call is running.
-/// The Ruby values the closures use stay on this frame's stack until then,
-/// which keeps them alive for the garbage collector.
-fn collect_each<F>(ruby: &magnus::Ruby, ips: Value, lookup: F) -> Result<RArray, Error>
-where
-    F: FnMut(&magnus::Ruby, Value) -> Result<Value, Error> + Send + 'static,
-{
-    let results = ruby.ary_new();
-    // Keeps a stored lookup exception alive while `each` unwinds.
-    let error_values = ruby.ary_new();
-    let tag = ruby.class_object().new_instance(())?;
-    let state = Arc::new(BatchState {
-        running: AtomicBool::new(true),
-        lookup: Mutex::new(Some(lookup)),
-        error: Mutex::new(None),
-    });
-
-    let block_state = Arc::clone(&state);
-    let results_ref = Opaque::from(results);
-    let error_values_ref = Opaque::from(error_values);
-    let tag_ref = Opaque::from(tag);
-    let block = ruby.proc_from_fn(move |ruby, args, _block| -> Result<Value, Error> {
-        // Read the captures up front; the lookup below can run Ruby code.
-        let state = Arc::clone(&block_state);
-        let results = ruby.get_inner(results_ref);
-        let error_values = ruby.get_inner(error_values_ref);
-        let tag = ruby.get_inner(tag_ref);
-
-        if !state.running.load(Ordering::Acquire) {
-            return Err(Error::new(
-                ruby.exception_runtime_error(),
-                ERR_BATCH_FINISHED,
-            ));
-        }
-        // An earlier lookup failed and `each` kept going. Skip the work; the
-        // batch already fails.
-        if lock_ignoring_poison(&state.error).is_some() {
-            return ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
-        }
-        // Stores the error, so `each` can't hide it by rescuing, and stops
-        // `each`. The first error wins, except that one such as Interrupt or
-        // SystemExit replaces a StandardError.
-        let fail = |err: Error| -> Result<Value, Error> {
-            // A jump such as `break` or `throw` isn't an exception, and `each`
-            // can't rescue it, so let it continue.
-            let Some(error_value) = err.value() else {
-                return Err(err);
-            };
-            error_values.push(error_value)?;
-            let is_standard = err.is_kind_of(ruby.exception_standard_error());
-            let mut stored = lock_ignoring_poison(&state.error);
-            if stored.is_none() || !is_standard {
-                *stored = Some(err.into());
-            }
-            drop(stored);
-            ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,))
-        };
-        let Some(mut lookup) = lock_ignoring_poison(&state.lookup).take() else {
-            return fail(Error::new(
-                ruby.exception_runtime_error(),
-                ERR_BATCH_REENTERED,
-            ));
-        };
-
+/// The block that `collect_each` passes to `each`. `batch` is a `Batch`.
+unsafe extern "C" fn batch_block(
+    _yielded: rb_sys::VALUE,
+    batch: rb_sys::VALUE,
+    argc: std::ffi::c_int,
+    argv: *const rb_sys::VALUE,
+    _block: rb_sys::VALUE,
+) -> rb_sys::VALUE {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value, Error> {
+        // SAFETY: Ruby calls blocks with the GVL held, and passes `argc` live
+        // values and the data that the block was created with.
+        let (ruby, batch) = unsafe { (magnus::Ruby::get_unchecked(), Value::from_raw(batch)) };
         // Match Enumerator#next: no values yield nil, several yield an Array.
-        let ip = match args {
-            [] => ruby.qnil().as_value(),
-            [ip] => *ip,
-            ips => ruby.ary_new_from_values(ips).as_value(),
-        };
-        let result = lookup(ruby, ip);
-
-        // The lookup can run Ruby code, so check again. Nothing between this
-        // check and the push below can end the batch.
-        if !state.running.load(Ordering::Acquire) {
-            // Don't drop an error, which may be a thread kill or Interrupt.
-            result?;
-            return Err(Error::new(
-                ruby.exception_runtime_error(),
-                ERR_BATCH_FINISHED,
-            ));
-        }
-        *lock_ignoring_poison(&state.lookup) = Some(lookup);
-
-        match result {
-            Ok(value) => {
-                results.push(value)?;
-                Ok(ruby.qnil().as_value())
+        let ip = match argc {
+            0 => ruby.qnil().as_value(),
+            // SAFETY: as above.
+            1 => unsafe { Value::from_raw(*argv) },
+            _ => {
+                let values = ruby.ary_new_capa(argc as usize);
+                for index in 0..argc as usize {
+                    // SAFETY: as above.
+                    values.push(unsafe { Value::from_raw(*argv.add(index)) })?;
+                }
+                values.as_value()
             }
-            Err(err) => fail(err),
+        };
+        collect_yielded(&ruby, Obj::try_convert(batch)?, ip)
+    }));
+    match result.and_then(|result| result) {
+        Ok(value) => value.as_raw(),
+        // SAFETY: nothing on this stack needs to be dropped.
+        Err(err) => unsafe { resume_error(err) },
+    }
+}
+
+/// Looks up a value that `each` yielded and adds it to the results.
+fn collect_yielded(ruby: &magnus::Ruby, batch: Obj<Batch>, ip: Value) -> Result<Value, Error> {
+    let Some(payload) = batch.payload() else {
+        return Err(Error::new(
+            ruby.exception_runtime_error(),
+            ERR_BATCH_FINISHED,
+        ));
+    };
+    let result = look_up_yielded(ruby, &batch, &payload, ip);
+    // The call can return while the lookup runs Ruby code. After that, only this
+    // stack keeps these alive and in place.
+    gc_guard(&payload);
+    gc_guard(&batch);
+    result
+}
+
+fn look_up_yielded(
+    ruby: &magnus::Ruby,
+    batch: &Batch,
+    payload: &Payload,
+    ip: Value,
+) -> Result<Value, Error> {
+    // An earlier lookup failed and `each` kept going. Skip the work; the batch
+    // already fails.
+    if !ruby.get_inner(payload.error_slot).is_empty() {
+        return stop_each(ruby, payload);
+    }
+    // A failed batch may not have stored its error yet (see fail_batch).
+    if batch.failed.load(Ordering::Acquire) || batch.looking_up.swap(true, Ordering::AcqRel) {
+        let err = Error::new(ruby.exception_runtime_error(), ERR_BATCH_REENTERED);
+        return fail_batch(ruby, batch, payload, err);
+    }
+
+    // Each lookup loads the reader itself so no guard is held while calling
+    // into Ruby (see NetworkIterator).
+    let reader = ruby.get_inner(payload.reader);
+    let result = match payload.path {
+        Some(path) => {
+            let path = ruby.get_inner(path);
+            reader.lookup_ip_path_value(ruby, ip, path.0.borrow_dependent())
         }
-    });
+        None => reader.lookup_ip_value(ruby, ip),
+    };
 
-    let ips_ref = Opaque::from(ips);
-    let block_ref = Opaque::from(block);
-    let body = ruby.proc_from_fn(move |ruby, _args, _block| -> Result<Value, Error> {
-        ruby.get_inner(ips_ref).funcall_with_block::<_, _, Value>(
-            "each",
-            (),
-            ruby.get_inner(block_ref),
-        )
-    });
-    let outcome = ruby
-        .module_kernel()
-        .funcall_with_block::<_, _, Value>("catch", (tag,), body);
+    // The lookup can run Ruby code, so check again. Nothing between this check
+    // and the push below can end the batch.
+    if !batch.running.load(Ordering::Acquire) {
+        // Don't drop an error, which may be a thread kill or Interrupt.
+        result?;
+        return Err(Error::new(
+            ruby.exception_runtime_error(),
+            ERR_BATCH_FINISHED,
+        ));
+    }
+    match result {
+        Ok(value) => {
+            batch.looking_up.store(false, Ordering::Release);
+            ruby.get_inner(payload.results).push(value)?;
+            Ok(ruby.qnil().as_value())
+        }
+        Err(err) => fail_batch(ruby, batch, payload, err),
+    }
+}
 
-    // The closures hold these only as `Opaque`, which the garbage collector
-    // doesn't see, so keep them on this frame's stack until `each` is done.
-    gc_guard(&results);
-    gc_guard(&error_values);
-    gc_guard(&tag);
-    gc_guard(&block);
+/// Stores the error, so that `each` can't hide it by rescuing, and stops `each`.
+/// The first error wins, except that one such as Interrupt or SystemExit
+/// replaces a StandardError.
+fn fail_batch(
+    ruby: &magnus::Ruby,
+    batch: &Batch,
+    payload: &Payload,
+    err: Error,
+) -> Result<Value, Error> {
+    // Creating the exception can run Ruby code and let `each` return first. Then
+    // this alone makes the batch fail.
+    batch.failed.store(true, Ordering::Release);
+    let exception = match err.error_type() {
+        // A jump such as `break` or `throw` isn't an exception, and `each` can't
+        // rescue it, so let it continue. If `each` catches it, the batch fails.
+        ErrorType::Jump(_) => return Err(err),
+        ErrorType::Error(class, message) => class.new_instance((message.as_ref(),))?,
+        ErrorType::Exception(exception) => *exception,
+    };
+    let error_slot = ruby.get_inner(payload.error_slot);
+    if error_slot.is_empty() || !exception.is_kind_of(ruby.exception_standard_error()) {
+        error_slot.store(0, exception)?;
+    }
+    stop_each(ruby, payload)
+}
 
-    state.running.store(false, Ordering::Release);
-    drop(lock_ignoring_poison(&state.lookup).take());
-    let lookup_error = lock_ignoring_poison(&state.error).take();
-
-    match (outcome, lookup_error) {
-        // A jump such as `break` or `throw` from the input still wins. So does
-        // an exception such as Interrupt, SystemExit or Timeout's, because the
-        // caller may rescue the lookup error and keep running.
-        (Err(err), _) if !err.is_kind_of(ruby.exception_standard_error()) => Err(err),
-        // The lookup error wins over a StandardError that `each` raised after
-        // it, such as from an `ensure`, or UncaughtThrowError when the block
-        // ran on another thread or fiber than the `catch`. An asynchronous
-        // StandardError, as from `Timeout.timeout(1, MyError)`, looks the same
-        // as one from an `ensure`, so it loses too.
-        (_, Some(err)) => Err(OpaqueError::into_error_with(err, ruby)),
-        (Err(err), None) => Err(err),
-        (Ok(_), None) => Ok(results),
+/// Throws to the `catch` in `collect_each`. On another thread or fiber, where
+/// that isn't possible, returns the stored error.
+fn stop_each(ruby: &magnus::Ruby, payload: &Payload) -> Result<Value, Error> {
+    let tag = ruby.get_inner(payload.tag);
+    let thrown = ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
+    match thrown {
+        Err(err) if err.value().is_some() => {
+            let uncaught_throw = ruby
+                .class_object()
+                .const_get::<_, ExceptionClass>("UncaughtThrowError")?;
+            let stored = ruby
+                .get_inner(payload.error_slot)
+                .entry::<Option<Exception>>(0)?;
+            match stored {
+                Some(stored) if err.is_kind_of(uncaught_throw) => Err(stored.into()),
+                _ => Err(err),
+            }
+        }
+        thrown => thrown,
     }
 }
 
@@ -993,12 +1203,6 @@ fn gc_guard<T: Copy>(value: &T) {
     unsafe {
         std::ptr::read_volatile(value);
     }
-}
-
-fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Parse a plain IPv4 or IPv6 String without calling Ruby. Returns `None` for
@@ -1412,9 +1616,16 @@ pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {
     reader_class.define_method("inspect", magnus::method!(Reader::inspect, 0))?;
     reader_class.define_method("each", magnus::method!(Reader::each, -1))?;
 
-    // Internal holder for Reader#each state; not meant to be used directly.
-    let iterator_class = reader_class.define_class("NetworkIterator", ruby.class_object())?;
+    // Internal holders for iteration and batch lookup state; not meant to be used
+    // directly. A constant of Reader would hide a top-level constant of the same
+    // name in every subclass, so these are not under Reader.
+    let iterator_class = rust.define_class("ReaderNetworkIterator", ruby.class_object())?;
     iterator_class.undef_default_alloc_func();
+    let batch_class = rust.define_class("ReaderBatch", ruby.class_object())?;
+    batch_class.undef_default_alloc_func();
+    batch_class.define_method("to_proc", magnus::method!(Batch::to_proc, 0))?;
+    let batch_path_class = rust.define_class("ReaderBatchPath", ruby.class_object())?;
+    batch_path_class.undef_default_alloc_func();
 
     let enumerable = ruby.class_object().const_get::<_, RModule>("Enumerable")?;
     reader_class.include_module(enumerable)?;
