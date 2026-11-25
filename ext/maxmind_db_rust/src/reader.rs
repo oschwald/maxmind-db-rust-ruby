@@ -816,7 +816,7 @@ struct BatchState<F> {
     /// Taken out while a lookup runs, and dropped when the batch ends so a
     /// kept block doesn't hold the database open.
     lookup: Mutex<Option<F>>,
-    /// The first lookup error, raised once `each` has unwound.
+    /// The first lookup or reentry error, raised once `each` has unwound.
     error: Mutex<Option<OpaqueError>>,
 }
 
@@ -876,8 +876,26 @@ where
         if lock_ignoring_poison(&state.error).is_some() {
             return ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
         }
+        // Stores the error, so `each` can't hide it by rescuing, and stops
+        // `each`. The first error wins, except that one such as Interrupt or
+        // SystemExit replaces a StandardError.
+        let fail = |err: Error| -> Result<Value, Error> {
+            // A jump such as `break` or `throw` isn't an exception, and `each`
+            // can't rescue it, so let it continue.
+            let Some(error_value) = err.value() else {
+                return Err(err);
+            };
+            error_values.push(error_value)?;
+            let is_standard = err.is_kind_of(ruby.exception_standard_error());
+            let mut stored = lock_ignoring_poison(&state.error);
+            if stored.is_none() || !is_standard {
+                *stored = Some(err.into());
+            }
+            drop(stored);
+            ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,))
+        };
         let Some(mut lookup) = lock_ignoring_poison(&state.lookup).take() else {
-            return Err(Error::new(
+            return fail(Error::new(
                 ruby.exception_runtime_error(),
                 ERR_BATCH_REENTERED,
             ));
@@ -894,6 +912,8 @@ where
         // The lookup can run Ruby code, so check again. Nothing between this
         // check and the push below can end the batch.
         if !state.running.load(Ordering::Acquire) {
+            // Don't drop an error, which may be a thread kill or Interrupt.
+            result?;
             return Err(Error::new(
                 ruby.exception_runtime_error(),
                 ERR_BATCH_FINISHED,
@@ -906,16 +926,7 @@ where
                 results.push(value)?;
                 Ok(ruby.qnil().as_value())
             }
-            Err(err) => {
-                // A jump such as `break` or `throw` isn't an exception, and
-                // `each` can't rescue it, so let it continue.
-                let Some(error_value) = err.value() else {
-                    return Err(err);
-                };
-                error_values.push(error_value)?;
-                lock_ignoring_poison(&state.error).get_or_insert(err.into());
-                ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,))
-            }
+            Err(err) => fail(err),
         }
     });
 
@@ -944,11 +955,15 @@ where
     let lookup_error = lock_ignoring_poison(&state.error).take();
 
     match (outcome, lookup_error) {
-        // A jump such as `break` or `throw` from the input still wins.
-        (Err(err), _) if err.value().is_none() => Err(err),
-        // The lookup error wins over what `each` raised after it, such as an
-        // `ensure` that raises, or UncaughtThrowError when the block ran on
-        // another thread or fiber than the `catch`.
+        // A jump such as `break` or `throw` from the input still wins. So does
+        // an exception such as Interrupt, SystemExit or Timeout's, because the
+        // caller may rescue the lookup error and keep running.
+        (Err(err), _) if !err.is_kind_of(ruby.exception_standard_error()) => Err(err),
+        // The lookup error wins over a StandardError that `each` raised after
+        // it, such as from an `ensure`, or UncaughtThrowError when the block
+        // ran on another thread or fiber than the `catch`. An asynchronous
+        // StandardError, as from `Timeout.timeout(1, MyError)`, looks the same
+        // as one from an `ensure`, so it loses too.
         (_, Some(err)) => Err(OpaqueError::into_error_with(err, ruby)),
         (Err(err), None) => Err(err),
         (Ok(_), None) => Ok(results),

@@ -1133,6 +1133,110 @@ class ReaderTest < Minitest::Test
     reader.close
   end
 
+  def test_get_many_lookup_error_does_not_hide_non_standard_errors
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    [Interrupt, SystemExit, Class.new(Exception)].each do |error| # rubocop:disable Lint/InheritException
+      stream = Object.new
+      stream.define_singleton_method(:each) do |&block|
+        block.call('not an ip')
+      ensure
+        raise error, 'stop'
+      end
+
+      assert_raises(error) { reader.get_many(stream) }
+      assert_raises(error) { reader.get_many_path(stream, ['country']) }
+    end
+
+    reader.close
+  end
+
+  def test_get_many_fails_when_the_block_is_reentered
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      ip = IPAddr.new('81.2.69.142')
+      ip.define_singleton_method(:to_i) do
+        Thread.new do
+          block.call('1.1.1.1')
+        rescue StandardError
+          nil
+        end.join
+        super()
+      end
+      block.call(ip)
+    end
+
+    [
+      -> { reader.get_many(stream) },
+      -> { reader.get_many_path(stream, ['country']) },
+    ].each do |call|
+      error = assert_raises(RuntimeError) { call.call }
+      assert_match(/already running/, error.message)
+    end
+
+    reader.close
+  end
+
+  def test_get_many_reentry_error_does_not_hide_non_standard_errors
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    [Interrupt, SystemExit].each do |error|
+      stream = Object.new
+      stream.define_singleton_method(:each) do |&block|
+        ip = IPAddr.new('81.2.69.142')
+        ip.define_singleton_method(:to_i) do
+          Thread.new do
+            block.call('1.1.1.1')
+          rescue StandardError
+            nil
+          end.join
+          raise error, 'stop'
+        end
+        block.call(ip)
+      end
+
+      assert_raises(error) { reader.get_many(stream) }
+      assert_raises(error) { reader.get_many_path(stream, ['country']) }
+    end
+
+    reader.close
+  end
+
+  def test_thread_kill_during_a_lookup_that_outlives_the_batch
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    looking_up = Queue.new
+    rescued = nil
+    thread = nil
+    stream = Object.new
+    stream.define_singleton_method(:each) do |&block|
+      ip = IPAddr.new('81.2.69.142')
+      ip.define_singleton_method(:to_i) do
+        looking_up << true
+        sleep
+      end
+      thread = Thread.new do
+        block.call(ip)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        rescued = e
+      end
+      looking_up.pop
+    end
+
+    assert_empty reader.get_many(stream)
+    thread.kill
+    thread.join
+
+    assert_nil rescued
+    reader.close
+  end
+
   def test_get_many_path
     skip 'Test database not found' unless File.exist?(test_db_path)
 
