@@ -1,4 +1,5 @@
 use crate::{
+    convert::{try_convert_array, try_convert_hash, try_convert_optional},
     decoder::RubyDecodedValue,
     gvl::without_gvl,
     metadata::Metadata,
@@ -12,13 +13,17 @@ use ::maxminddb as maxminddb_crate;
 use arc_swap::{ArcSwapOption, Guard};
 use ipnetwork::IpNetwork;
 use magnus::{
-    error::{Error, OpaqueError},
+    block::Proc,
+    error::{Error, ErrorType},
+    gc,
     prelude::*,
+    rb_sys::{catch_unwind, protect, resume_error, AsRawValue, FromRawValue},
     scan_args::get_kwargs,
     scan_args::scan_args,
     typed_data::Obj,
     value::Opaque,
-    Exception, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule, RString, Symbol, Value,
+    DataTypeFunctions, Exception, ExceptionClass, IntoValue, RArray, RClass, RHash, RModule,
+    RString, Symbol, TypedData, Value,
 };
 use maxminddb_crate::{MaxMindDbError, PathElement, Reader as MaxMindReader, Within};
 use memmap2::Mmap;
@@ -27,6 +32,7 @@ use std::{
     fs::File,
     io::Read as IoRead,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -174,7 +180,7 @@ self_cell::self_cell!(
 /// iterator in a Ruby object lets the garbage collector drop them instead.
 /// When `each` returns normally, by `break` or by an exception, it releases
 /// the state right away so `close` still frees the database at once.
-#[magnus::wrap(class = "MaxMind::DB::Rust::Reader::NetworkIterator", free_immediately)]
+#[magnus::wrap(class = "MaxMind::DB::Rust::ReaderNetworkIterator", free_immediately)]
 struct NetworkIterator {
     iter: Mutex<Option<OwnedWithin>>,
 }
@@ -332,25 +338,37 @@ impl Reader {
         if result.is_err() {
             self.initialized.store(false, Ordering::Release);
         }
-        result
+        result.map_err(|err| err.into_error(&ruby))
     }
 
-    fn open(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<(), Error> {
+    fn open(&self, ruby: &magnus::Ruby, args: &[Value]) -> Result<(), OpenError> {
         // Accept the options both as keywords and as a positional Hash, like
         // the official gem's `initialize(database, options = {})`.
-        let args = scan_args::<(Value,), (Option<RHash>,), (), (), RHash, ()>(args)?;
+        let args = scan_args::<(Value,), (Option<Value>,), (), (), RHash, ()>(args)?;
         let (database,) = args.required;
         let (positional_options,) = args.optional;
         let options = match positional_options {
             Some(_) if !args.keywords.is_empty() => {
-                return Err(Error::new(
+                return Err(OpenError::Ruby(Error::new(
                     ruby.exception_arg_error(),
                     "wrong number of arguments (given 3, expected 1..2)",
-                ));
+                )));
             }
             // `get_kwargs` removes the keys it reads, so work on a copy rather
             // than emptying the caller's Hash.
-            Some(options) => options.funcall::<_, _, RHash>("dup", ())?,
+            Some(options) => {
+                let Some(options) = try_convert_hash(options, ruby)? else {
+                    return Err(OpenError::Ruby(Error::new(
+                        ruby.exception_type_error(),
+                        "options must be a Hash",
+                    )));
+                };
+                // Check the result without naming its class (see try_convert_hash).
+                let copy = options.funcall::<_, _, Value>("dup", ())?;
+                RHash::from_value(copy).ok_or_else(|| {
+                    Error::new(ruby.exception_type_error(), "options.dup must be a Hash")
+                })?
+            }
             None => args.keywords,
         };
         let kw = get_kwargs::<_, (), (Option<Symbol>,), ()>(options, &[], &["mode"])?;
@@ -388,107 +406,91 @@ impl Reader {
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_before_load(&ruby, self.parse_lookup_ip(ip_address, &ruby))?;
-
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-
-        lookup_result_to_value(&ruby, reader.lookup(parsed_ip), "Database lookup failed")
+        self.lookup_ip_value(&ruby, ip_address)
     }
 
     #[inline]
     fn get_path(&self, ip_address: Value, path: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_before_load(&ruby, self.parse_lookup_ip(ip_address, &ruby))?;
-        let owned_path = self.parse_before_load(&ruby, self.parse_path(path, &ruby))?;
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
+        let owned_path = self.parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-
-        lookup_result_to_value(
-            &ruby,
-            reader.lookup_path(parsed_ip, &path_elements),
-            "Database lookup failed",
-        )
+        self.lookup_path_value(&ruby, parsed_ip, &path_elements)
     }
 
     #[inline]
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_before_load(&ruby, self.parse_lookup_ip(ip_address, &ruby))?;
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
-
-        // Perform lookup with prefix
-        lookup_prefix_result_to_array(
-            &ruby,
-            reader.lookup_prefix(parsed_ip),
-            "Database lookup failed",
-        )
+        let result = {
+            let guard = self.get_reader(&ruby)?;
+            guard.as_ref().as_ref().unwrap().lookup_prefix(parsed_ip)
+        };
+        lookup_prefix_result_to_array(&ruby, result, "Database lookup failed")
     }
 
     fn get_many(rb_self: Obj<Self>, ips: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
-        let reader_self = &*rb_self;
+        rb_self.get_reader(&ruby)?;
 
-        // Each lookup loads the reader itself so no guard is held while
-        // calling into Ruby (see NetworkIterator).
-        reader_self.get_reader(&ruby)?;
-
-        if let Ok(ip_array) = RArray::try_convert(ips) {
-            return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
-                let ip = ip_array.entry::<Value>(index as isize)?;
-                reader_self.lookup_ip_value(&ruby, ip)
-            }));
+        if let Some(ip_array) = try_convert_array(ips, &ruby)? {
+            let results = lookup_array(&ruby, ip_array, |ip| rb_self.lookup_ip_value(&ruby, ip));
+            gc_guard(&rb_self);
+            return results;
         }
 
-        ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        // The block holds the Reader object, not the database, so a block that
-        // each keeps (or a stack that is never unwound) can't keep it open.
-        let reader_ref = Opaque::from(rb_self);
-        let results = collect_each(&ruby, ips, move |ruby, ip| {
-            ruby.get_inner(reader_ref).lookup_ip_value(ruby, ip)
-        });
-        // The block holds the Reader only as `Opaque`; keep it on this stack.
-        gc_guard(&rb_self);
-        results
+        collect_each(&ruby, rb_self, ips, None)
     }
 
     fn get_many_path(rb_self: Obj<Self>, ips: Value, path: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
-        let reader_self = &*rb_self;
+        rb_self.get_reader(&ruby)?;
 
-        // Each lookup loads the reader itself so no guard is held while
-        // calling into Ruby (see NetworkIterator).
-        reader_self.get_reader(&ruby)?;
+        let owned_path = rb_self.parse_path(path, &ruby)?;
+        let path = PathWithElements::new(owned_path, |path| path_elements_from_owned_path(path));
 
-        let owned_path = reader_self.parse_path(path, &ruby)?;
-        let path_elements = path_elements_from_owned_path(owned_path.as_ref());
-
-        if let Ok(ip_array) = RArray::try_convert(ips) {
-            return ruby.ary_try_from_iter((0..ip_array.len()).map(|index| {
-                let ip = ip_array.entry::<Value>(index as isize)?;
-                reader_self.lookup_ip_path_value(&ruby, ip, &path_elements)
-            }));
+        if let Some(ip_array) = RArray::from_value(ips) {
+            // A plain String lookup can't abandon this stack, so the path stays on
+            // it until another kind of address needs Ruby code.
+            let mut stack_path = Some(path);
+            let mut batch_path = None;
+            let results = lookup_array(&ruby, ip_array, |ip| {
+                if let Some(path) = &stack_path {
+                    if let Some(parsed_ip) = rb_self.parse_plain_lookup_ip(ip) {
+                        return rb_self.lookup_path_value(
+                            &ruby,
+                            parsed_ip,
+                            path.borrow_dependent(),
+                        );
+                    }
+                }
+                if let Some(path) = stack_path.take() {
+                    batch_path = Some(ruby.obj_wrap(BatchPath(path)));
+                }
+                let path: &Obj<BatchPath> = batch_path.as_ref().expect("the path was moved above");
+                rb_self.lookup_ip_path_value(&ruby, ip, path.0.borrow_dependent())
+            });
+            gc_guard(&batch_path);
+            gc_guard(&rb_self);
+            return results;
         }
 
-        ensure_enumerable(ips, &ruby, "ips must be an Array or Enumerable")?;
-        // See get_many: the block holds the Reader object, not the database.
-        let reader_ref = Opaque::from(rb_self);
-        let results = collect_each(&ruby, ips, move |ruby, ip| {
-            let path_elements = path_elements_from_owned_path(owned_path.as_ref());
-            ruby.get_inner(reader_ref)
-                .lookup_ip_path_value(ruby, ip, &path_elements)
-        });
-        gc_guard(&rb_self);
-        results
+        // Otherwise the garbage collector owns the path (see NetworkIterator).
+        let path = ruby.obj_wrap(BatchPath(path));
+        if let Some(ip_array) = try_convert_array(ips, &ruby)? {
+            let results = lookup_array(&ruby, ip_array, |ip| {
+                rb_self.lookup_ip_path_value(&ruby, ip, path.0.borrow_dependent())
+            });
+            gc_guard(&path);
+            gc_guard(&rb_self);
+            return results;
+        }
+
+        collect_each(&ruby, rb_self, ips, Some(path))
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -524,12 +526,15 @@ impl Reader {
         self.reader.load().is_none()
     }
 
-    fn inspect(&self) -> String {
+    fn inspect(rb_self: Obj<Self>) -> String {
+        let reader_self = &*rb_self;
         format!(
-            "#<MaxMind::DB::Rust::Reader:0x{:x} @closed={} @ip_version={}>",
-            self as *const Self as usize,
-            self.closed(),
-            self.ip_version.load(Ordering::Relaxed),
+            "#<{}:0x{:x} @closed={} @ip_version={}>",
+            // SAFETY: the name is copied before Ruby code can run.
+            unsafe { rb_self.classname() },
+            reader_self as *const Self as usize,
+            reader_self.closed(),
+            reader_self.ip_version.load(Ordering::Relaxed),
         )
     }
 
@@ -542,8 +547,7 @@ impl Reader {
 
         // Check the arguments before returning an enumerator, so a bad network
         // fails here and not when iteration starts.
-        let network =
-            reader_self.parse_before_load(ruby, reader_self.parse_each_network(ruby, args))?;
+        let network = reader_self.parse_each_network(ruby, args)?;
 
         // If no block given, return enumerator. It gets the parsed network, not
         // the original argument, so iterating does not convert it again.
@@ -584,6 +588,169 @@ impl Reader {
         Ok(ruby.qnil().as_value())
     }
 
+    #[inline]
+    fn lookup_ip_value(&self, ruby: &magnus::Ruby, ip: Value) -> Result<Value, Error> {
+        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        let result = {
+            let guard = self.get_reader(ruby)?;
+            guard.as_ref().as_ref().unwrap().lookup(parsed_ip)
+        };
+        lookup_result_to_value(ruby, result, "Database lookup failed")
+    }
+
+    #[inline]
+    fn parse_lookup_ip(&self, ip_address: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+        // A plain String is parsed without calling Ruby. Everything else can
+        // call Ruby, so check for a closed reader first (see get_reader).
+        let parsed_ip = match parse_plain_ip(ip_address) {
+            Some(parsed_ip) => parsed_ip,
+            None => {
+                self.get_reader(ruby)?;
+                parse_ip_with_ipaddr(ip_address, ruby)?
+            }
+        };
+
+        if self.ip_version.load(Ordering::Relaxed) == 4 && parsed_ip.is_ipv6() {
+            self.get_reader(ruby)?;
+            // Echo the argument as given, like the official gem, rather than
+            // the parsed address, which drops an IPv6 zone and normalizes.
+            return Err(ipv6_in_ipv4_error(ruby, ip_address));
+        }
+        Ok(parsed_ip)
+    }
+
+    /// Helper method to get the reader from the ArcSwapOption
+    ///
+    /// Parsing arguments can call into Ruby, and no guard may be on the stack
+    /// then (see NetworkIterator). So before such a call, methods call this and
+    /// drop the guard, which reports a closed reader ahead of a bad argument.
+    /// After parsing they call this again for the lookup.
+    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Guard<Option<Arc<ReaderSource>>>, Error> {
+        let guard = self.reader.load();
+        if guard.is_none() {
+            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
+        }
+        Ok(guard)
+    }
+
+    fn parse_path(
+        &self,
+        path: Value,
+        ruby: &magnus::Ruby,
+    ) -> Result<Arc<[OwnedPathElement]>, Error> {
+        // A plain path is hashed without calling Ruby. Anything else can call
+        // Ruby or fail, so check for a closed reader first (see get_reader).
+        let path = match RArray::from_value(path) {
+            Some(path) => path,
+            None => {
+                self.get_reader(ruby)?;
+                path_array(path, ruby)?
+            }
+        };
+        let hash = path_cache_hash(path, ruby, || self.get_reader(ruby).map(drop))?;
+
+        if let Some(cached) = self.cached_path(path, hash, ruby)? {
+            return Ok(cached);
+        }
+
+        let parsed_path: Arc<[OwnedPathElement]> = parse_path_array(path, ruby)?.into();
+        self.store_cached_path(hash, parsed_path.clone());
+        Ok(parsed_path)
+    }
+
+    fn cached_path(
+        &self,
+        path: RArray,
+        hash: u64,
+        ruby: &magnus::Ruby,
+    ) -> Result<Option<Arc<[OwnedPathElement]>>, Error> {
+        // Comparing a candidate can call Ruby `to_str` or `to_int` methods,
+        // which may reenter this reader or release the GVL. Collect the
+        // candidates and release the lock before comparing them so that no
+        // Ruby code runs while the mutex is held. The first candidate is kept
+        // separately so the usual case does not allocate.
+        let (first, rest) = {
+            let cache = match self.path_cache.lock() {
+                Ok(cache) => cache,
+                Err(_) => return Ok(None),
+            };
+
+            let mut first = None;
+            let mut rest = Vec::new();
+            for entry in cache
+                .iter()
+                .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
+            {
+                if first.is_none() {
+                    first = Some(entry.elements.clone());
+                } else {
+                    rest.push(entry.elements.clone());
+                }
+            }
+            (first, rest)
+        };
+
+        for candidate in first.into_iter().chain(rest) {
+            if path_matches_cached(path, candidate.as_ref(), ruby)? {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn store_cached_path(&self, hash: u64, elements: Arc<[OwnedPathElement]>) {
+        if let Ok(mut cache) = self.path_cache.lock() {
+            if cache
+                .iter()
+                .any(|entry| entry.hash == hash && entry.elements.as_ref() == elements.as_ref())
+            {
+                return;
+            }
+
+            cache.push_back(CachedPath { hash, elements });
+            while cache.len() > PATH_CACHE_MAX_ENTRIES {
+                cache.pop_front();
+            }
+        }
+    }
+
+    #[inline]
+    fn lookup_path_value(
+        &self,
+        ruby: &magnus::Ruby,
+        parsed_ip: IpAddr,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Value, Error> {
+        let result = {
+            let guard = self.get_reader(ruby)?;
+            guard
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .lookup_path(parsed_ip, path_elements)
+        };
+        lookup_result_to_value(ruby, result, "Database lookup failed")
+    }
+
+    /// Parses a plain IP address String that this database can look up. Returns
+    /// `None` for anything else. This never calls Ruby.
+    #[inline]
+    fn parse_plain_lookup_ip(&self, ip: Value) -> Option<IpAddr> {
+        parse_plain_ip(ip).filter(|ip| ip.is_ipv4() || self.ip_version.load(Ordering::Relaxed) != 4)
+    }
+
+    #[inline]
+    fn lookup_ip_path_value(
+        &self,
+        ruby: &magnus::Ruby,
+        ip: Value,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Value, Error> {
+        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        self.lookup_path_value(ruby, parsed_ip, path_elements)
+    }
+
     /// Parses the optional network argument to `each`. Returns `None` when the
     /// network is missing or nil, which means the whole database.
     fn parse_each_network(
@@ -598,7 +765,7 @@ impl Reader {
         };
 
         // Accept both String and IPAddr objects
-        let network_str = if let Ok(s) = RString::try_convert(network_arg) {
+        let network_str = if let Some(s) = try_convert_optional::<RString>(network_arg, ruby)? {
             s.to_string()?
         } else {
             let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
@@ -610,8 +777,8 @@ impl Reader {
             } else {
                 // Try to call to_s on it (works for other objects)
                 let to_s_result: Value = network_arg.funcall("to_s", ())?;
-                RString::try_convert(to_s_result)
-                    .map_err(|_| {
+                try_convert_optional::<RString>(to_s_result, ruby)?
+                    .ok_or_else(|| {
                         Error::new(
                             ruby.exception_arg_error(),
                             "Network parameter must be a String or IPAddr",
@@ -642,156 +809,6 @@ impl Reader {
 
         Ok(Some(network))
     }
-
-    /// Lookups parse their arguments, which can call into Ruby, before loading
-    /// the reader, so no guard is on the stack then (see NetworkIterator). A
-    /// closed reader is still reported ahead of a bad argument.
-    #[inline]
-    fn parse_before_load<T>(
-        &self,
-        ruby: &magnus::Ruby,
-        parsed: Result<T, Error>,
-    ) -> Result<T, Error> {
-        match parsed {
-            // A jump such as `throw` isn't an exception, so let it through.
-            Err(err) if err.value().is_some() && self.closed() => {
-                Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB))
-            }
-            parsed => parsed,
-        }
-    }
-
-    /// Helper method to get the reader from the ArcSwapOption
-    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Guard<Option<Arc<ReaderSource>>>, Error> {
-        let guard = self.reader.load();
-        if guard.is_none() {
-            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
-        }
-        Ok(guard)
-    }
-
-    #[inline]
-    fn parse_lookup_ip(&self, ip_address: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-        let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
-        self.validate_lookup_ip(ip_address, parsed_ip, ruby)
-    }
-
-    #[inline]
-    fn validate_lookup_ip(
-        &self,
-        ip_address: Value,
-        parsed_ip: IpAddr,
-        ruby: &magnus::Ruby,
-    ) -> Result<IpAddr, Error> {
-        validate_lookup_ip_for_version(
-            ip_address,
-            parsed_ip,
-            self.ip_version.load(Ordering::Relaxed),
-            ruby,
-        )
-    }
-
-    #[inline]
-    fn lookup_ip_value(&self, ruby: &magnus::Ruby, ip: Value) -> Result<Value, Error> {
-        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
-        let result = {
-            let guard = self.get_reader(ruby)?;
-            guard.as_ref().as_ref().unwrap().lookup(parsed_ip)
-        };
-        lookup_result_to_value(ruby, result, "Database lookup failed")
-    }
-
-    #[inline]
-    fn lookup_ip_path_value(
-        &self,
-        ruby: &magnus::Ruby,
-        ip: Value,
-        path_elements: &[PathElement<'_>],
-    ) -> Result<Value, Error> {
-        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
-        let result = {
-            let guard = self.get_reader(ruby)?;
-            guard
-                .as_ref()
-                .as_ref()
-                .unwrap()
-                .lookup_path(parsed_ip, path_elements)
-        };
-        lookup_result_to_value(ruby, result, "Database lookup failed")
-    }
-
-    fn parse_path(
-        &self,
-        path: Value,
-        ruby: &magnus::Ruby,
-    ) -> Result<Arc<[OwnedPathElement]>, Error> {
-        let path = path_array(path, ruby)?;
-        let hash = path_cache_hash(path, ruby)?;
-
-        if let Some(cached) = self.cached_path(path, hash)? {
-            return Ok(cached);
-        }
-
-        let parsed_path: Arc<[OwnedPathElement]> = parse_path_array(path, ruby)?.into();
-        self.store_cached_path(hash, parsed_path.clone());
-        Ok(parsed_path)
-    }
-
-    fn cached_path(
-        &self,
-        path: RArray,
-        hash: u64,
-    ) -> Result<Option<Arc<[OwnedPathElement]>>, Error> {
-        // Comparing a candidate can call Ruby `to_str` or `to_int` methods,
-        // which may reenter this reader or release the GVL. Collect the
-        // candidates and release the lock before comparing them so that no
-        // Ruby code runs while the mutex is held. The first candidate is kept
-        // separately so the usual case does not allocate.
-        let (first, rest) = {
-            let cache = match self.path_cache.lock() {
-                Ok(cache) => cache,
-                Err(_) => return Ok(None),
-            };
-
-            let mut first = None;
-            let mut rest = Vec::new();
-            for entry in cache
-                .iter()
-                .filter(|entry| entry.hash == hash && entry.elements.len() == path.len())
-            {
-                if first.is_none() {
-                    first = Some(entry.elements.clone());
-                } else {
-                    rest.push(entry.elements.clone());
-                }
-            }
-            (first, rest)
-        };
-
-        for candidate in first.into_iter().chain(rest) {
-            if path_matches_cached(path, candidate.as_ref())? {
-                return Ok(Some(candidate));
-            }
-        }
-
-        Ok(None)
-    }
-
-    fn store_cached_path(&self, hash: u64, elements: Arc<[OwnedPathElement]>) {
-        if let Ok(mut cache) = self.path_cache.lock() {
-            if cache
-                .iter()
-                .any(|entry| entry.hash == hash && entry.elements.as_ref() == elements.as_ref())
-            {
-                return;
-            }
-
-            cache.push_back(CachedPath { hash, elements });
-            while cache.len() > PATH_CACHE_MAX_ENTRIES {
-                cache.pop_front();
-            }
-        }
-    }
 }
 
 // SAFETY: Reader does not store Ruby VALUE handles. The database source is
@@ -801,39 +818,107 @@ impl Reader {
 // while the Ruby VM is active.
 unsafe impl Send for Reader {}
 
-#[inline]
-fn validate_lookup_ip_for_version(
-    ip_address: Value,
-    parsed_ip: IpAddr,
-    ip_version: u16,
+fn lookup_array(
     ruby: &magnus::Ruby,
-) -> Result<IpAddr, Error> {
-    if ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
-        // Echo the argument as given, like the official gem, rather than the
-        // parsed address, which drops an IPv6 zone and normalizes.
-        Err(ipv6_in_ipv4_error(ruby, ip_address))
-    } else {
-        Ok(parsed_ip)
+    ips: RArray,
+    mut lookup: impl FnMut(Value) -> Result<Value, Error>,
+) -> Result<RArray, Error> {
+    ruby.ary_try_from_iter((0..ips.len()).map(|index| lookup(ips.entry(index as isize)?)))
+}
+
+type PathElements<'path> = Vec<PathElement<'path>>;
+
+self_cell::self_cell!(
+    /// A parsed path together with the lookup elements that borrow from it.
+    struct PathWithElements {
+        owner: Arc<[OwnedPathElement]>,
+
+        #[covariant]
+        dependent: PathElements,
+    }
+);
+
+/// The path of a `get_many_path` call, owned by a Ruby object so that the
+/// garbage collector frees it if Ruby abandons the call's stack (see
+/// NetworkIterator).
+#[magnus::wrap(class = "MaxMind::DB::Rust::ReaderBatchPath", free_immediately)]
+struct BatchPath(PathWithElements);
+
+/// State of a `get_many` or `get_many_path` call whose input is not an Array.
+///
+/// This is the data of the block that `each` gets. Ruby marks a block's data for
+/// as long as the block can be called. That can be after the call returned, and
+/// also after Ruby abandoned the call's stack.
+#[derive(TypedData)]
+#[magnus(class = "MaxMind::DB::Rust::ReaderBatch", free_immediately, mark)]
+struct Batch {
+    /// Not valid when `running` is false. Use `payload` to get it.
+    payload: Payload,
+    /// Cleared when the call returns.
+    running: AtomicBool,
+    /// Set when a lookup or a reentry failed, before any Ruby code can run.
+    failed: AtomicBool,
+    /// Set while the block runs a lookup, and left set if the lookup never
+    /// finishes, such as because of a `throw` or a thread kill.
+    looking_up: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+struct Payload {
+    reader: Opaque<Obj<Reader>>,
+    path: Option<Opaque<Obj<BatchPath>>>,
+    results: Opaque<RArray>,
+    /// Holds the lookup or reentry exception to raise once `each` has unwound.
+    error_slot: Opaque<RArray>,
+    /// Stops `each` when thrown.
+    tag: Opaque<Value>,
+}
+
+impl Batch {
+    /// Creates the block. This is a Ruby method because a block keeps the receiver
+    /// of the method that created it alive, which must not be the Reader.
+    fn to_proc(rb_self: Obj<Self>) -> Result<Proc, Error> {
+        // SAFETY: `batch_block` has the signature of a block function, and
+        // `rb_self` is a live object. Ruby marks it for as long as the block, or a
+        // method that was defined from the block, exists.
+        let block =
+            protect(|| unsafe { rb_sys::rb_proc_new(Some(batch_block), rb_self.as_raw()) })?;
+        // SAFETY: `rb_proc_new` returns a live Proc.
+        Proc::try_convert(unsafe { Value::from_raw(block) })
+    }
+
+    /// The objects that the block uses, or `None` if the call has returned. The
+    /// caller must keep them on its stack, because the call can return later.
+    fn payload(&self) -> Option<Payload> {
+        self.running.load(Ordering::Acquire).then_some(self.payload)
     }
 }
 
-/// Lookup state shared by the block that `collect_each` passes to `each`.
-struct BatchState<F> {
-    /// Cleared when `collect_each` returns. The block may outlive the call.
-    running: AtomicBool,
-    /// Taken out while a lookup runs, and dropped when the batch ends so a
-    /// kept block doesn't hold the database open.
-    lookup: Mutex<Option<F>>,
-    /// The first lookup error, raised once `each` has unwound.
-    error: Mutex<Option<OpaqueError>>,
+impl DataTypeFunctions for Batch {
+    /// Marks, and pins, the payload only while the call runs, so that a block that
+    /// `each` kept doesn't keep the reader and the results alive.
+    fn mark(&self, marker: &gc::Marker) {
+        if let Some(payload) = self.payload() {
+            marker.mark(payload.reader);
+            if let Some(path) = payload.path {
+                marker.mark(path);
+            }
+            marker.mark(payload.results);
+            marker.mark(payload.error_slot);
+            marker.mark(payload.tag);
+        }
+    }
 }
 
 const ERR_BATCH_FINISHED: &str =
     "the block that get_many or get_many_path passed to each was called after it returned";
 const ERR_BATCH_REENTERED: &str =
-    "the block that get_many or get_many_path passed to each was called while already running";
+    "the block that get_many or get_many_path passed to each was called before an earlier lookup \
+     finished";
+const ERR_BATCH_UNFINISHED: &str =
+    "each returned to get_many or get_many_path before a lookup finished";
 
-/// Calls `ips.each` with a native block and collects `lookup` of each yielded
+/// Calls `ips.each` with a native block and collects the lookup of each yielded
 /// value.
 ///
 /// Iterating with a block, rather than an external enumerator, lets any
@@ -841,142 +926,73 @@ const ERR_BATCH_REENTERED: &str =
 /// of looking like the end of the input.
 ///
 /// A lookup error stops the iteration with `throw`, which `each` can't rescue,
-/// and is raised after `each` unwinds, so the result can't silently come back
-/// short.
-///
-/// `each` can keep the block and call it after this returns, so the block owns
-/// what it uses and only appends to `results` while this call is running.
-/// The Ruby values the closures use stay on this frame's stack until then,
-/// which keeps them alive for the garbage collector.
-fn collect_each<F>(ruby: &magnus::Ruby, ips: Value, lookup: F) -> Result<RArray, Error>
-where
-    F: FnMut(&magnus::Ruby, Value) -> Result<Value, Error> + Send + 'static,
-{
+/// and is raised after `each` unwinds. A lookup that never finished is an error
+/// too. So the result can't silently come back short.
+fn collect_each(
+    ruby: &magnus::Ruby,
+    reader: Obj<Reader>,
+    ips: Value,
+    path: Option<Obj<BatchPath>>,
+) -> Result<RArray, Error> {
+    ensure_enumerable(ips, ruby, "ips must be an Array or Enumerable")?;
+
     let results = ruby.ary_new();
-    // Keeps a stored lookup exception alive while `each` unwinds.
-    let error_values = ruby.ary_new();
-    let tag = ruby.class_object().new_instance(())?;
-    let state = Arc::new(BatchState {
+    let error_slot = ruby.ary_new();
+    let tag: Value = ruby.class_object().new_instance(())?;
+    let payload = Payload {
+        reader: reader.into(),
+        path: path.map(Opaque::from),
+        results: results.into(),
+        error_slot: error_slot.into(),
+        tag: tag.into(),
+    };
+    let batch = ruby.obj_wrap(Batch {
+        payload,
         running: AtomicBool::new(true),
-        lookup: Mutex::new(Some(lookup)),
-        error: Mutex::new(None),
+        failed: AtomicBool::new(false),
+        looking_up: AtomicBool::new(false),
     });
+    // Allocating the Batch can run the garbage collector before the Batch marks
+    // the payload.
+    gc_guard(&payload);
 
-    let block_state = Arc::clone(&state);
-    let results_ref = Opaque::from(results);
-    let error_values_ref = Opaque::from(error_values);
-    let tag_ref = Opaque::from(tag);
-    let block = ruby.proc_from_fn(move |ruby, args, _block| -> Result<Value, Error> {
-        // Read the captures up front; the lookup below can run Ruby code.
-        let state = Arc::clone(&block_state);
-        let results = ruby.get_inner(results_ref);
-        let error_values = ruby.get_inner(error_values_ref);
-        let tag = ruby.get_inner(tag_ref);
+    let block: Proc = batch.funcall("to_proc", ())?;
 
-        if !state.running.load(Ordering::Acquire) {
-            return Err(Error::new(
-                ruby.exception_runtime_error(),
-                ERR_BATCH_FINISHED,
-            ));
-        }
-        // An earlier lookup failed and `each` kept going. Skip the work; the
-        // batch already fails.
-        if lock_ignoring_poison(&state.error).is_some() {
-            return ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
-        }
-        let Some(mut lookup) = lock_ignoring_poison(&state.lookup).take() else {
-            return Err(Error::new(
-                ruby.exception_runtime_error(),
-                ERR_BATCH_REENTERED,
-            ));
-        };
+    // This does not use `proc_from_fn`, because magnus 0.9 frees a closure's data
+    // type before Ruby is done with it.
+    let each_args = ruby.ary_new_from_values(&[ips, block.as_value()]);
+    // SAFETY: `call_each` has the signature of a block function, and all values
+    // are live.
+    let outcome = protect(|| unsafe {
+        rb_sys::rb_catch_obj(tag.as_raw(), Some(call_each), each_args.as_raw())
+    });
+    gc_guard(&each_args);
 
-        // Match Enumerator#next: no values yield nil, several yield an Array.
-        let ip = match args {
-            [] => ruby.qnil().as_value(),
-            [ip] => *ip,
-            ips => ruby.ary_new_from_values(ips).as_value(),
-        };
-        let result = lookup(ruby, ip);
-
-        // The lookup can run Ruby code, so check again. Nothing between this
-        // check and the push below can end the batch.
-        if !state.running.load(Ordering::Acquire) {
-            return Err(Error::new(
-                ruby.exception_runtime_error(),
-                ERR_BATCH_FINISHED,
-            ));
-        }
-        *lock_ignoring_poison(&state.lookup) = Some(lookup);
-
-        match result {
-            Ok(value) => {
-                results.push(value)?;
-                Ok(ruby.qnil().as_value())
+    batch.running.store(false, Ordering::Release);
+    match outcome {
+        // A jump such as `break` or `throw` from the input still wins. So does
+        // an exception such as Interrupt, SystemExit or Timeout's, because the
+        // caller may rescue the lookup error and keep running.
+        Err(err) if !err.is_kind_of(ruby.exception_standard_error()) => Err(err),
+        // The lookup error wins over a StandardError that `each` raised after
+        // it, such as from an `ensure`. An asynchronous StandardError, as from
+        // `Timeout.timeout(1, MyError)`, looks the same as one from an
+        // `ensure`, so it loses too.
+        outcome => match error_slot.entry::<Option<Exception>>(0)? {
+            Some(exception) => Err(exception.into()),
+            None => {
+                outcome?;
+                if batch.looking_up.load(Ordering::Acquire) || batch.failed.load(Ordering::Acquire)
+                {
+                    return Err(Error::new(
+                        ruby.exception_runtime_error(),
+                        ERR_BATCH_UNFINISHED,
+                    ));
+                }
+                Ok(results)
             }
-            Err(err) => {
-                // A jump such as `break` or `throw` isn't an exception, and
-                // `each` can't rescue it, so let it continue.
-                let Some(error_value) = err.value() else {
-                    return Err(err);
-                };
-                error_values.push(error_value)?;
-                lock_ignoring_poison(&state.error).get_or_insert(err.into());
-                ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,))
-            }
-        }
-    });
-
-    let ips_ref = Opaque::from(ips);
-    let block_ref = Opaque::from(block);
-    let body = ruby.proc_from_fn(move |ruby, _args, _block| -> Result<Value, Error> {
-        ruby.get_inner(ips_ref).funcall_with_block::<_, _, Value>(
-            "each",
-            (),
-            ruby.get_inner(block_ref),
-        )
-    });
-    let outcome = ruby
-        .module_kernel()
-        .funcall_with_block::<_, _, Value>("catch", (tag,), body);
-
-    // The closures hold these only as `Opaque`, which the garbage collector
-    // doesn't see, so keep them on this frame's stack until `each` is done.
-    gc_guard(&results);
-    gc_guard(&error_values);
-    gc_guard(&tag);
-    gc_guard(&block);
-
-    state.running.store(false, Ordering::Release);
-    drop(lock_ignoring_poison(&state.lookup).take());
-    let lookup_error = lock_ignoring_poison(&state.error).take();
-
-    match (outcome, lookup_error) {
-        // A jump such as `break` or `throw` from the input still wins.
-        (Err(err), _) if err.value().is_none() => Err(err),
-        // The lookup error wins over what `each` raised after it, such as an
-        // `ensure` that raises, or UncaughtThrowError when the block ran on
-        // another thread or fiber than the `catch`.
-        (_, Some(err)) => Err(OpaqueError::into_error_with(err, ruby)),
-        (Err(err), None) => Err(err),
-        (Ok(_), None) => Ok(results),
+        },
     }
-}
-
-/// Keeps `value` in this frame's memory up to this point, like Ruby's
-/// `RB_GC_GUARD`, so the garbage collector's stack scan finds it.
-#[inline(always)]
-fn gc_guard<T: Copy>(value: &T) {
-    // SAFETY: `value` is a valid reference to an initialized `T`.
-    unsafe {
-        std::ptr::read_volatile(value);
-    }
-}
-
-fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {
@@ -990,26 +1006,203 @@ fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> 
     }
 }
 
-/// Parse IP address from Ruby value (String or IPAddr) - optimized version
-///
-/// Plain IPv4 and IPv6 strings are parsed in Rust. Anything else is handed to
-/// `IPAddr.new`, as the official gem does, so CIDR strings, scoped IPv6
-/// addresses and the `IPAddr::InvalidAddressError` raised for invalid input
-/// all match it.
-#[inline(always)]
-fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-    // Fast path: Try as RString first (most common case) - zero-copy
-    if let Some(rstring) = RString::from_value(value) {
-        // SAFETY: the &str is only used for parsing before any Ruby code can
-        // run and modify the string.
-        if let Some(ip) = unsafe { rstring.as_str() }.ok().and_then(parse_ip_string) {
-            return Ok(ip);
-        }
-        return ipaddr_to_ip(ipaddr_new(value, ruby)?, ruby);
+/// The body of the `catch` in `collect_each`. `each_args` is an Array of the
+/// input and the block.
+unsafe extern "C" fn call_each(
+    _tag: rb_sys::VALUE,
+    each_args: rb_sys::VALUE,
+    _argc: std::ffi::c_int,
+    _argv: *const rb_sys::VALUE,
+    _block: rb_sys::VALUE,
+) -> rb_sys::VALUE {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value, Error> {
+        // SAFETY: `collect_each` keeps the Array alive.
+        let each_args = RArray::try_convert(unsafe { Value::from_raw(each_args) })?;
+        let ips = each_args.entry::<Value>(0)?;
+        let block = each_args.entry::<Proc>(1)?;
+        ips.funcall_with_block::<_, _, Value>("each", (), block)
+    }));
+    match result.and_then(|result| result) {
+        Ok(value) => value.as_raw(),
+        // SAFETY: nothing on this stack needs to be dropped.
+        Err(err) => unsafe { resume_error(err) },
+    }
+}
+
+/// The block that `collect_each` passes to `each`. `batch` is a `Batch`.
+unsafe extern "C" fn batch_block(
+    _yielded: rb_sys::VALUE,
+    batch: rb_sys::VALUE,
+    argc: std::ffi::c_int,
+    argv: *const rb_sys::VALUE,
+    _block: rb_sys::VALUE,
+) -> rb_sys::VALUE {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value, Error> {
+        // SAFETY: Ruby calls blocks with the GVL held, and passes `argc` live
+        // values and the data that the block was created with.
+        let (ruby, batch) = unsafe { (magnus::Ruby::get_unchecked(), Value::from_raw(batch)) };
+        // Match Enumerator#next: no values yield nil, several yield an Array.
+        let ip = match argc {
+            0 => ruby.qnil().as_value(),
+            // SAFETY: as above.
+            1 => unsafe { Value::from_raw(*argv) },
+            _ => {
+                let values = ruby.ary_new_capa(argc as usize);
+                for index in 0..argc as usize {
+                    // SAFETY: as above.
+                    values.push(unsafe { Value::from_raw(*argv.add(index)) })?;
+                }
+                values.as_value()
+            }
+        };
+        collect_yielded(&ruby, Obj::try_convert(batch)?, ip)
+    }));
+    match result.and_then(|result| result) {
+        Ok(value) => value.as_raw(),
+        // SAFETY: nothing on this stack needs to be dropped.
+        Err(err) => unsafe { resume_error(err) },
+    }
+}
+
+/// Looks up a value that `each` yielded and adds it to the results.
+fn collect_yielded(ruby: &magnus::Ruby, batch: Obj<Batch>, ip: Value) -> Result<Value, Error> {
+    let Some(payload) = batch.payload() else {
+        return Err(Error::new(
+            ruby.exception_runtime_error(),
+            ERR_BATCH_FINISHED,
+        ));
+    };
+    let result = look_up_yielded(ruby, &batch, &payload, ip);
+    // The call can return while the lookup runs Ruby code. After that, only this
+    // stack keeps these alive and in place.
+    gc_guard(&payload);
+    gc_guard(&batch);
+    result
+}
+
+fn look_up_yielded(
+    ruby: &magnus::Ruby,
+    batch: &Batch,
+    payload: &Payload,
+    ip: Value,
+) -> Result<Value, Error> {
+    // An earlier lookup failed and `each` kept going. Skip the work; the batch
+    // already fails.
+    if !ruby.get_inner(payload.error_slot).is_empty() {
+        return stop_each(ruby, payload);
+    }
+    // A failed batch may not have stored its error yet (see fail_batch).
+    if batch.failed.load(Ordering::Acquire) || batch.looking_up.swap(true, Ordering::AcqRel) {
+        let err = Error::new(ruby.exception_runtime_error(), ERR_BATCH_REENTERED);
+        return fail_batch(ruby, batch, payload, err);
     }
 
-    let ipaddr_class = ipaddr_class(ruby)?;
-    if value.is_kind_of(ipaddr_class) {
+    // Each lookup loads the reader itself so no guard is held while calling
+    // into Ruby (see NetworkIterator).
+    let reader = ruby.get_inner(payload.reader);
+    let result = match payload.path {
+        Some(path) => {
+            let path = ruby.get_inner(path);
+            reader.lookup_ip_path_value(ruby, ip, path.0.borrow_dependent())
+        }
+        None => reader.lookup_ip_value(ruby, ip),
+    };
+
+    // The lookup can run Ruby code, so check again. Nothing between this check
+    // and the push below can end the batch.
+    if !batch.running.load(Ordering::Acquire) {
+        // Don't drop an error, which may be a thread kill or Interrupt.
+        result?;
+        return Err(Error::new(
+            ruby.exception_runtime_error(),
+            ERR_BATCH_FINISHED,
+        ));
+    }
+    match result {
+        Ok(value) => {
+            batch.looking_up.store(false, Ordering::Release);
+            ruby.get_inner(payload.results).push(value)?;
+            Ok(ruby.qnil().as_value())
+        }
+        Err(err) => fail_batch(ruby, batch, payload, err),
+    }
+}
+
+/// Stores the error, so that `each` can't hide it by rescuing, and stops `each`.
+/// The first error wins, except that one such as Interrupt or SystemExit
+/// replaces a StandardError.
+fn fail_batch(
+    ruby: &magnus::Ruby,
+    batch: &Batch,
+    payload: &Payload,
+    err: Error,
+) -> Result<Value, Error> {
+    // Creating the exception can run Ruby code and let `each` return first. Then
+    // this alone makes the batch fail.
+    batch.failed.store(true, Ordering::Release);
+    let exception = match err.error_type() {
+        // A jump such as `break` or `throw` isn't an exception, and `each` can't
+        // rescue it, so let it continue. If `each` catches it, the batch fails.
+        ErrorType::Jump(_) => return Err(err),
+        ErrorType::Error(class, message) => class.new_instance((message.as_ref(),))?,
+        ErrorType::Exception(exception) => *exception,
+    };
+    let error_slot = ruby.get_inner(payload.error_slot);
+    if error_slot.is_empty() || !exception.is_kind_of(ruby.exception_standard_error()) {
+        error_slot.store(0, exception)?;
+    }
+    stop_each(ruby, payload)
+}
+
+/// Throws to the `catch` in `collect_each`. On another thread or fiber, where
+/// that isn't possible, returns the stored error.
+fn stop_each(ruby: &magnus::Ruby, payload: &Payload) -> Result<Value, Error> {
+    let tag = ruby.get_inner(payload.tag);
+    let thrown = ruby.module_kernel().funcall::<_, _, Value>("throw", (tag,));
+    match thrown {
+        Err(err) if err.value().is_some() => {
+            let uncaught_throw = ruby
+                .class_object()
+                .const_get::<_, ExceptionClass>("UncaughtThrowError")?;
+            let stored = ruby
+                .get_inner(payload.error_slot)
+                .entry::<Option<Exception>>(0)?;
+            match stored {
+                Some(stored) if err.is_kind_of(uncaught_throw) => Err(stored.into()),
+                _ => Err(err),
+            }
+        }
+        thrown => thrown,
+    }
+}
+
+/// Keeps `value` in this frame's memory up to this point, like Ruby's
+/// `RB_GC_GUARD`, so the garbage collector's stack scan finds it.
+#[inline(always)]
+fn gc_guard<T: Copy>(value: &T) {
+    // SAFETY: `value` is a valid reference to an initialized `T`.
+    unsafe {
+        std::ptr::read_volatile(value);
+    }
+}
+
+/// Parse a plain IPv4 or IPv6 String without calling Ruby. Returns `None` for
+/// anything else.
+#[inline(always)]
+fn parse_plain_ip(value: Value) -> Option<IpAddr> {
+    let rstring = RString::from_value(value)?;
+    // SAFETY: the &str is only used for parsing before any Ruby code can run
+    // and modify the string. An invalidly encoded string is not a plain IP.
+    unsafe { rstring.test_as_str() }.and_then(parse_ip_string)
+}
+
+/// Parse an IP address that is not a plain String with `IPAddr`
+///
+/// Anything that is not an `IPAddr` is handed to `IPAddr.new`, as the official
+/// gem does, so CIDR strings, scoped IPv6 addresses and the
+/// `IPAddr::InvalidAddressError` raised for invalid input all match it.
+fn parse_ip_with_ipaddr(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+    if value.is_kind_of(ipaddr_class(ruby)?) {
         return ipaddr_to_ip(value, ruby);
     }
 
@@ -1029,7 +1222,13 @@ fn ipaddr_to_ip(ipaddr: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
     let is_ipv4: bool = ipaddr.funcall("ipv4?", ())?;
     if is_ipv4 {
         let address = u32::try_from(address).map_err(|_| {
-            interpolated_arg_error(ruby, "'", ipaddr, "' does not appear to be an IPv4 address")
+            interpolated_error(
+                ruby,
+                ruby.exception_arg_error(),
+                "'",
+                ipaddr,
+                "' does not appear to be an IPv4 address",
+            )
         })?;
         return Ok(IpAddr::V4(Ipv4Addr::from(address)));
     }
@@ -1135,15 +1334,16 @@ fn lookup_error(ruby: &magnus::Ruby, err: MaxMindDbError, context: &str) -> Erro
 
 /// The error for an IPv6 address in an IPv4-only database.
 fn ipv6_in_ipv4_error(ruby: &magnus::Ruby, ip: Value) -> Error {
-    interpolated_arg_error(
+    interpolated_error(
         ruby,
+        ruby.exception_arg_error(),
         "Error looking up ",
         ip,
         ". You attempted to look up an IPv6 address in an IPv4-only database.",
     )
 }
 
-/// An `ArgumentError` whose message is `"#{prefix}#{value}#{suffix}"`.
+/// An exception of `class` whose message is `"#{prefix}#{value}#{suffix}"`.
 ///
 /// The message is built the way Ruby string interpolation builds it: a String
 /// is used as is and anything else goes through `to_s`. So, as in the
@@ -1151,12 +1351,18 @@ fn ipv6_in_ipv4_error(ruby: &magnus::Ruby, ip: Value) -> Error {
 /// `Encoding::CompatibilityError` from joining the text, is what the caller
 /// gets. Formatting the `Value` with `{}` would instead ignore those and show
 /// `#<Class:0x...>`.
-fn interpolated_arg_error(ruby: &magnus::Ruby, prefix: &str, value: Value, suffix: &str) -> Error {
+fn interpolated_error(
+    ruby: &magnus::Ruby,
+    class: ExceptionClass,
+    prefix: &str,
+    value: Value,
+    suffix: &str,
+) -> Error {
     let build = || -> Result<Exception, Error> {
         let message = ruby.str_new(prefix);
         message.buf_append(value.to_r_string()?)?;
         message.cat(suffix);
-        ruby.exception_arg_error().new_instance((message,))
+        class.new_instance((message,))
     };
     match build() {
         Ok(exception) => exception.into(),
@@ -1164,35 +1370,42 @@ fn interpolated_arg_error(ruby: &magnus::Ruby, prefix: &str, value: Value, suffi
     }
 }
 
-/// Convert a database path argument the way Ruby's `File.open` does: call
-/// `to_path` when the object has it (`Pathname`, `File`), then require a
-/// String.
-fn database_path(database: Value, ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
-    let database = if database.respond_to("to_path", false)? {
-        database.funcall::<_, _, Value>("to_path", ())?
-    } else {
-        database
-    };
-    let path = RString::try_convert(database)?;
-    // SAFETY: the bytes are copied before Ruby can mutate or free the string.
-    let bytes = unsafe { path.as_slice() }.to_vec();
-    if bytes.contains(&0) {
-        return Err(Error::new(
-            ruby.exception_arg_error(),
-            "string contains null byte",
-        ));
-    }
-    path_from_bytes(bytes, path)
+/// A database path, and the Ruby String to show it as in error messages. Only
+/// the String has the encoding.
+struct DatabasePath {
+    path: PathBuf,
+    name: RString,
+}
+
+/// Convert a database path argument the way Ruby's `File.open` does, including
+/// `to_path`, the encoding and the check for null bytes.
+fn database_path(database: Value, ruby: &magnus::Ruby) -> Result<DatabasePath, Error> {
+    // SAFETY: `rb_get_path` is called with a live VALUE and returns a String.
+    // `protect` catches anything it raises or throws.
+    let name = unsafe { Value::from_raw(protect(|| rb_sys::rb_get_path(database.as_raw()))?) };
+    let name = RString::try_convert(name)?;
+    Ok(DatabasePath {
+        path: path_from_string(name, ruby)?,
+        name,
+    })
 }
 
 #[cfg(unix)]
-fn path_from_bytes(bytes: Vec<u8>, _path: RString) -> Result<PathBuf, Error> {
+fn path_from_string(path: RString, _ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
     use std::os::unix::ffi::OsStringExt;
+
+    // macOS file names are UTF-8, and Ruby converts the path before it opens
+    // the file.
+    #[cfg(target_os = "macos")]
+    let path = path.conv_enc(_ruby.utf8_encoding())?;
+
+    // SAFETY: the bytes are copied before Ruby can mutate or free the string.
+    let bytes = unsafe { path.as_slice() }.to_vec();
     Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
 }
 
 #[cfg(not(unix))]
-fn path_from_bytes(_bytes: Vec<u8>, path: RString) -> Result<PathBuf, Error> {
+fn path_from_string(path: RString, _ruby: &magnus::Ruby) -> Result<PathBuf, Error> {
     Ok(PathBuf::from(path.to_string()?))
 }
 
@@ -1204,163 +1417,158 @@ fn database_buffer(database: Value) -> Result<Vec<u8>, Error> {
 }
 
 /// Open a MaxMind DB using memory-mapped I/O (MODE_MMAP)
-fn open_database_mmap(path: &Path) -> Result<ReaderSource, Error> {
-    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-    let file = open_database_file(path, &ruby)?;
-
-    // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
-    // requires callers not to modify or truncate the mapped file while this
-    // reader is alive. Database updates should atomically replace the path.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
-        Error::new(
-            ruby.exception_io_error(),
-            format!("Failed to memory-map database file: {}", e),
-        )
-    })?;
-    let reader = MaxMindReader::from_source(mmap).map_err(|_| {
-        invalid_database_exception(&format!(
-            "Error opening database file ({}). Is this a valid MaxMind DB file?",
-            path.display()
-        ))
-    })?;
+fn open_database_mmap(database: &DatabasePath) -> Result<ReaderSource, OpenError> {
+    let map_file = || {
+        let file = open_database_file(&database.path)?;
+        // SAFETY: the mapping is read-only, and MODE_MMAP's documented contract
+        // requires callers not to modify or truncate the mapped file while this
+        // reader is alive. Database updates should atomically replace the path.
+        unsafe { Mmap::map(&file) }.map_err(FileError::Io)
+    };
+    let mmap = map_file().map_err(|err| OpenError::File(err, database.name))?;
+    let reader =
+        MaxMindReader::from_source(mmap).map_err(|_| OpenError::InvalidDatabase(database.name))?;
 
     Ok(ReaderSource::Mmap(reader))
 }
 
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
-fn open_database_memory(path: &Path) -> Result<ReaderSource, Error> {
-    let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-
+fn open_database_memory(database: &DatabasePath) -> Result<ReaderSource, OpenError> {
     // Opening and reading the file can block for a long time, so do it
     // without the GVL and build any Ruby exception afterwards.
+    let path = database.path.as_path();
     let buffer = without_gvl(|| {
-        let mut file = File::open(path).map_err(MemoryReadError::Io)?;
-        // Opening a directory succeeds on Unix; raise Errno::EISDIR up front,
-        // as `open_database_file` does.
-        if file.metadata().map_err(MemoryReadError::Io)?.is_dir() {
-            return Err(MemoryReadError::IsDirectory);
-        }
+        let mut file = open_database_file(path)?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(MemoryReadError::Io)?;
+        file.read_to_end(&mut buffer).map_err(FileError::Io)?;
         Ok(buffer)
     })?
-    .map_err(|err| match err {
-        MemoryReadError::Io(e) => io_error(&ruby, &e, path),
-        MemoryReadError::IsDirectory => errno_error(&ruby, "EISDIR", path),
-    })?;
-
-    reader_from_buffer(
-        buffer,
-        format!(
-            "Error opening database file ({}). Is this a valid MaxMind DB file?",
-            path.display()
-        ),
-    )
-}
-
-fn open_database_buffer(buffer: Vec<u8>) -> Result<ReaderSource, Error> {
-    reader_from_buffer(
-        buffer,
-        "Error opening database from buffer. Is this a valid MaxMind DB file?".to_owned(),
-    )
-}
-
-fn reader_from_buffer(buffer: Vec<u8>, invalid_message: String) -> Result<ReaderSource, Error> {
+    .map_err(|err| OpenError::File(err, database.name))?;
     let reader = MaxMindReader::from_source(buffer)
-        .map_err(|_| invalid_database_exception(invalid_message.as_str()))?;
+        .map_err(|_| OpenError::InvalidDatabase(database.name))?;
 
     Ok(ReaderSource::Memory(reader))
 }
 
-/// Errors from the GVL-free part of `open_database_memory`, converted to Ruby
-/// exceptions once the GVL is held again.
-enum MemoryReadError {
+fn open_database_buffer(buffer: Vec<u8>) -> Result<ReaderSource, Error> {
+    let reader = MaxMindReader::from_source(buffer).map_err(|_| {
+        invalid_database_exception(
+            "Error opening database from buffer. Is this a valid MaxMind DB file?",
+        )
+    })?;
+
+    Ok(ReaderSource::Memory(reader))
+}
+
+/// Opens the file without calling Ruby, so this can run without the GVL.
+fn open_database_file(path: &Path) -> Result<File, FileError> {
+    let file = File::open(path).map_err(FileError::Io)?;
+    // Opening a directory succeeds on Unix, and the error only shows up later
+    // as an unhelpful mmap or read failure. Raise Errno::EISDIR up front, as
+    // the official gem does.
+    if file.metadata().map_err(FileError::Io)?.is_dir() {
+        return Err(FileError::IsDirectory);
+    }
+    Ok(file)
+}
+
+enum FileError {
     Io(std::io::Error),
     IsDirectory,
 }
 
-fn open_database_file(path: &Path, ruby: &magnus::Ruby) -> Result<File, Error> {
-    let file = File::open(path).map_err(|e| io_error(ruby, &e, path))?;
-    // Opening a directory succeeds on Unix, and the error only shows up later
-    // as an unhelpful mmap or read failure. Raise Errno::EISDIR up front, as
-    // the official gem does.
-    let is_dir = file
-        .metadata()
-        .map_err(|e| io_error(ruby, &e, path))?
-        .is_dir();
-    if is_dir {
-        return Err(errno_error(ruby, "EISDIR", path));
+/// Why opening a database failed, with the String to show the path as.
+///
+/// Creating an exception can call Ruby, which can abandon the stack. So this
+/// waits until the file is closed and the reader can be initialized again.
+enum OpenError {
+    Ruby(Error),
+    File(FileError, RString),
+    InvalidDatabase(RString),
+}
+
+impl From<Error> for OpenError {
+    fn from(err: Error) -> Self {
+        Self::Ruby(err)
     }
-    Ok(file)
+}
+
+impl OpenError {
+    fn into_error(self, ruby: &magnus::Ruby) -> Error {
+        match self {
+            Self::Ruby(err) => err,
+            Self::File(FileError::Io(err), name) => io_error(ruby, &err, name),
+            Self::File(FileError::IsDirectory, name) => errno_error(ruby, "EISDIR", name),
+            Self::InvalidDatabase(name) => interpolated_error(
+                ruby,
+                invalid_database_class(),
+                "Error opening database file (",
+                name.as_value(),
+                "). Is this a valid MaxMind DB file?",
+            ),
+        }
+    }
 }
 
 /// Convert an I/O error into the matching `Errno` exception, so callers that
 /// rescue `SystemCallError` see the same classes as with the official gem.
 /// Errors without an OS error code fall back to `IOError`.
-fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, path: &Path) -> Error {
-    #[cfg(unix)]
-    if let Some(code) = err.raw_os_error() {
-        if let Some(error) = system_call_error(ruby, code, path) {
-            return error;
-        }
-    }
-
-    let errno_name = match err.kind() {
-        std::io::ErrorKind::NotFound => Some("ENOENT"),
-        std::io::ErrorKind::PermissionDenied => Some("EACCES"),
-        std::io::ErrorKind::IsADirectory => Some("EISDIR"),
-        _ => None,
-    };
-    match errno_name {
-        Some(name) => errno_error(ruby, name, path),
-        None => Error::new(
+fn io_error(ruby: &magnus::Ruby, err: &std::io::Error, name: RString) -> Error {
+    let Some(code) = err.raw_os_error() else {
+        return interpolated_error(
+            ruby,
             ruby.exception_io_error(),
-            format!("{} - {}", err, path.display()),
-        ),
+            &format!("{err} - "),
+            name.as_value(),
+            "",
+        );
+    };
+    // Ruby turns this into the `Errno` subclass for the code.
+    let exception = ruby
+        .exception_system_call_error()
+        .new_instance((name, errno_from_os_error(code)));
+    match exception {
+        Ok(exception) => Error::from(exception),
+        Err(error) => error,
     }
 }
 
-/// `SystemCallError.new(path, code)`, which Ruby turns into the `Errno`
-/// subclass for that code.
-#[cfg(unix)]
-fn system_call_error(ruby: &magnus::Ruby, code: i32, path: &Path) -> Option<Error> {
-    let class = ruby
-        .class_object()
-        .const_get::<_, RClass>("SystemCallError")
-        .ok()?;
-    let exception = class
-        .new_instance((path.display().to_string(), code))
-        .ok()?;
-    Exception::from_value(exception).map(Error::from)
+#[cfg(not(windows))]
+fn errno_from_os_error(code: i32) -> i32 {
+    code
 }
 
-fn errno_error(ruby: &magnus::Ruby, name: &str, path: &Path) -> Error {
+/// Map a Win32 error code to an errno with the function Ruby itself uses.
+#[cfg(windows)]
+fn errno_from_os_error(code: i32) -> i32 {
+    extern "C" {
+        fn rb_w32_map_errno(code: u32) -> std::ffi::c_int;
+    }
+    // SAFETY: Ruby exports this function on Windows. It only reads a table.
+    unsafe { rb_w32_map_errno(code as u32) }
+}
+
+fn errno_error(ruby: &magnus::Ruby, errno_name: &str, name: RString) -> Error {
     let class = ruby
         .class_object()
         .const_get::<_, RModule>("Errno")
-        .and_then(|errno| errno.const_get::<_, RClass>(name));
-    let exception = class.and_then(|class| class.new_instance((path.display().to_string(),)));
-    match exception.map(Exception::from_value) {
-        Ok(Some(exception)) => Error::from(exception),
-        Ok(None) => Error::new(ruby.exception_io_error(), path.display().to_string()),
+        .and_then(|errno| errno.const_get::<_, ExceptionClass>(errno_name));
+    match class.and_then(|class| class.new_instance((name,))) {
+        Ok(exception) => Error::from(exception),
         Err(error) => error,
     }
 }
 
 /// Get the InvalidDatabaseError class
-fn invalid_database_error() -> RClass {
+fn invalid_database_class() -> ExceptionClass {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-    let rust = rust_module(&ruby);
-    rust.const_get::<_, RClass>("InvalidDatabaseError")
+    rust_module(&ruby)
+        .const_get::<_, ExceptionClass>("InvalidDatabaseError")
         .expect("InvalidDatabaseError class should exist")
 }
 
 fn invalid_database_exception(message: &str) -> Error {
-    Error::new(
-        ExceptionClass::from_value(invalid_database_error().as_value())
-            .expect("InvalidDatabaseError should convert to ExceptionClass"),
-        message.to_owned(),
-    )
+    Error::new(invalid_database_class(), message.to_owned())
 }
 
 pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {
@@ -1389,9 +1597,16 @@ pub(crate) fn define(ruby: &magnus::Ruby, rust: RModule) -> Result<(), Error> {
     reader_class.define_method("inspect", magnus::method!(Reader::inspect, 0))?;
     reader_class.define_method("each", magnus::method!(Reader::each, -1))?;
 
-    // Internal holder for Reader#each state; not meant to be used directly.
-    let iterator_class = reader_class.define_class("NetworkIterator", ruby.class_object())?;
+    // Internal holders for iteration and batch lookup state; not meant to be used
+    // directly. A constant of Reader would hide a top-level constant of the same
+    // name in every subclass, so these are not under Reader.
+    let iterator_class = rust.define_class("ReaderNetworkIterator", ruby.class_object())?;
     iterator_class.undef_default_alloc_func();
+    let batch_class = rust.define_class("ReaderBatch", ruby.class_object())?;
+    batch_class.undef_default_alloc_func();
+    batch_class.define_method("to_proc", magnus::method!(Batch::to_proc, 0))?;
+    let batch_path_class = rust.define_class("ReaderBatchPath", ruby.class_object())?;
+    batch_path_class.undef_default_alloc_func();
 
     let enumerable = ruby.class_object().const_get::<_, RModule>("Enumerable")?;
     reader_class.include_module(enumerable)?;

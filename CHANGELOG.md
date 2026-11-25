@@ -11,9 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** Ruby 3.3 or later is now required. Ruby 3.2 is end of life,
   and `magnus` 0.9 no longer builds against it.
+- **Breaking:** Building from source now requires Rust 1.85 or later, because
+  `magnus` 0.9 does.
+- **Breaking:** Lookups no longer call `to_s` on an argument that is neither a
+  String nor an `IPAddr`, such as a Symbol. They pass it to `IPAddr.new`, as the
+  `maxmind-db` gem does, which raises `IPAddr::AddressFamilyError`.
+- **Breaking:** `get_many` and `get_many_path` now raise the closed-reader
+  `RuntimeError` if the reader is closed before the last lookup, as `get` does.
+  Previously they finished with the database that was open at the start.
+- **Breaking:** `Reader.new` now converts the path as `File.open` does. A UTF-16
+  path raises `Encoding::CompatibilityError`, unless Ruby converts it because
+  `Encoding.default_internal` is set. On Linux, any other path that is not in
+  UTF-8 is converted to UTF-8 only if `Encoding.default_internal` is set.
 - Upgraded the `maxminddb` crate from 0.32.0 to 0.33.0, which fixes network
   iteration omitting some IPv6 networks and decoding of some four-byte data
   pointers.
+- Opening a reader now builds a prefix index, which makes lookups that find no
+  record about 25% faster. Opening in a memory-mapped mode takes longer. With a
+  111 MB GeoIP2 City database, it went from about 7 to 150 microseconds. Reuse
+  readers rather than opening one for each request.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
 - The source gem now includes `Cargo.lock` and the release build profile, so
   installing from source builds the tested dependency versions with the same
@@ -30,18 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   element defines `to_str` or `to_int` and that method calls back into the
   reader or releases the GVL.
   Ruby conversion methods no longer run while the path cache lock is held.
+- Anything an argument's `to_str`, `to_ary` or `to_int` raises or throws now
+  reaches the caller. Previously it was replaced with an `ArgumentError`, or
+  ignored when another conversion succeeded. Only these are still treated as an
+  argument of the wrong type: a `TypeError`, a number such as `Float::INFINITY`
+  that has no Integer value, and a `Numeric` without `to_i`.
 - `Reader` now matches the `maxmind-db` gem in several more calls:
   - `Reader.new` accepts a `Pathname` or any object with `to_path`, and its
     options as a positional Hash as well as keywords.
   - `Reader` can be subclassed. `new` returns an instance of the subclass and
     calls its `initialize`.
-  - Errors opening the database file raise the matching `Errno` exception, such
-    as `Errno::EACCES` or `Errno::EISDIR`, instead of `IOError`.
+  - Errors opening or memory-mapping the database file raise the matching
+    `Errno` exception, such as `Errno::EACCES` or `Errno::EISDIR`, instead of
+    `IOError`. Their messages keep the encoding of the path.
   - Invalid IP addresses raise `IPAddr::InvalidAddressError`, a subclass of
     `ArgumentError`. Lookups accept CIDR strings such as `"1.2.3.4/32"` and
     scoped IPv6 addresses such as `"fe80::1%eth0"`, as `IPAddr.new` does.
-    Arguments that are neither a String nor an `IPAddr` are passed to
-    `IPAddr.new` as well, rather than converted with `to_s` first.
   - `metadata` works after `close`.
 - `Reader#each(nil)` now iterates over the whole database, as documented,
   instead of raising `ArgumentError`. `each` now raises `ArgumentError` for
@@ -51,7 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input raises from its `each`. Previously they treated it as the end of the
   input and returned a short result. A lookup error, such as an invalid IP,
   now stops a non-Array input's `each` and is raised even if that `each`
-  rescues it.
+  rescues it. If a lookup never finishes, such as because `each` catches a
+  `throw` from it, they raise `RuntimeError` instead of returning a short
+  result.
 - `Metadata#search_tree_size` no longer wraps to a wrong value, such as 0,
   for databases whose search tree is 4 GiB or larger. It is now computed in
   64 bits.
@@ -61,6 +83,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `require 'maxmind/db/rust'` no longer raises `LoadError` with the precompiled
   gems. The gem now loads the extension from the Ruby version directory that
   those gems use.
+- `require 'maxmind/db/rust'` no longer fails if the application defines a
+  top-level `DB`, such as Sequel's usual `DB` constant. It also no longer skips
+  defining its own classes if there is a top-level `Reader`.
 - The error raised for an IPv6 address in an IPv4-only database, and for an
   `IPAddr` that claims to be IPv4 but holds a larger address, now builds its
   message the way the `maxmind-db` gem does. An exception or `throw` from the

@@ -39,7 +39,7 @@ perl -pi -e "s/(?<=s\.version\s{,20}=\s{,20}\').+?(?=\')/$version/g" maxmind-db-
 echo $"Test results:"
 
 # Run tests and lints
-bundle exec rake test
+bundle exec rake compile test
 bundle exec rubocop
 cd ext/maxmind_db_rust
 BINDGEN_EXTRA_CLANG_ARGS="-I$(dirname $(dirname $(command -v gcc)))/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion | cut -d. -f1)/include" cargo clippy -- -D warnings
