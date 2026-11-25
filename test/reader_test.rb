@@ -425,6 +425,86 @@ class ReaderTest < Minitest::Test
     assert_equal(:thrown, catch(:done) { reader.get(ip) })
   end
 
+  def test_to_s_error_in_lookup_error_message_propagates
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+    ip = IPAddr.new('2001::')
+    ip.define_singleton_method(:to_s) { raise IOError, 'to_s failed' }
+
+    [
+      -> { reader.get(ip) },
+      -> { reader.get_with_prefix_length(ip) },
+      -> { reader.get_path(ip, ['ip']) },
+      -> { reader.get_many([ip]) },
+      -> { reader.get_many_path([ip], ['ip']) },
+    ].each do |call|
+      error = assert_raises(IOError) { call.call }
+      assert_equal 'to_s failed', error.message
+    end
+  end
+
+  def test_throw_from_to_s_in_lookup_error_message_passes_through
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+    ip = IPAddr.new('2001::')
+    ip.define_singleton_method(:to_s) { throw :done, :thrown }
+
+    assert_equal(:thrown, catch(:done) { reader.get(ip) })
+
+    ips = Enumerator.new { |y| y << ip }
+
+    assert_equal(:thrown, catch(:done) { reader.get_many(ips) })
+    assert_equal(:thrown, catch(:done) { reader.get_many_path(ips, ['ip']) })
+  end
+
+  def test_lookup_error_message_uses_to_s
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+    ip = IPAddr.new('2001::')
+    ip.define_singleton_method(:to_s) { 'custom text' }
+
+    error = assert_raises(ArgumentError) { reader.get(ip) }
+    assert_match(/\AError looking up custom text\./, error.message)
+  end
+
+  def test_lookup_error_message_matches_ruby_interpolation
+    skip 'Test database not found' unless File.exist?(ipv4_only_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(ipv4_only_db_path)
+    ["\xFF".b, 'café', 42].each do |text|
+      ip = IPAddr.new('2001::')
+      ip.define_singleton_method(:to_s) { text }
+      expected = "Error looking up #{ip}. You attempted to look up an IPv6 address in an IPv4-only database."
+
+      error = assert_raises(ArgumentError) { reader.get(ip) }
+      assert_equal expected, error.message
+      assert_equal expected.encoding, error.message.encoding
+    end
+
+    ip = IPAddr.new('2001::')
+    ip.define_singleton_method(:to_s) { '::1'.encode('UTF-16LE') }
+    assert_raises(Encoding::CompatibilityError) { reader.get(ip) }
+  end
+
+  def test_to_s_error_in_out_of_range_ipv4_message_propagates
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    ip = IPAddr.new('1.1.1.1')
+    ip.define_singleton_method(:to_i) { 2**32 }
+    ip.define_singleton_method(:to_s) { raise IOError, 'to_s failed' }
+
+    error = assert_raises(IOError) { reader.get(ip) }
+    assert_equal 'to_s failed', error.message
+
+    ip.define_singleton_method(:to_s) { throw :done, :thrown }
+
+    assert_equal(:thrown, catch(:done) { reader.get(ip) })
+  end
+
   def test_metadata_after_close
     skip 'Test database not found' unless File.exist?(test_db_path)
 
