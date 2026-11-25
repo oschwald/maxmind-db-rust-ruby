@@ -387,8 +387,29 @@ class ReaderTest < Minitest::Test
       -> { reader.get_with_prefix_length('not an ip') },
       -> { reader.get_path('not an ip', ['country']) },
       -> { reader.get_path('1.1.1.1', 'not a path') },
+      -> { reader.get_path('1.1.1.1', nil) },
+      -> { reader.get_path('1.1.1.1', [Object.new]) },
+      -> { reader.get_path('1.1.1.1', ['country', 2**70]) },
+      -> { reader.get_path('1.1.1.1', ["\xFF"]) },
+      -> { reader.get_path('1.1.1.1', ["\xFF".b]) },
     ].each do |call|
       error = assert_raises(RuntimeError) { call.call }
+      assert_match(/closed/, error.message)
+    end
+  end
+
+  def test_closed_reader_does_not_call_path_conversion_methods
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+    reader.close
+    path = Object.new
+    path.define_singleton_method(:to_ary) { raise IOError, 'converted' }
+    key = Object.new
+    key.define_singleton_method(:to_str) { raise IOError, 'converted' }
+
+    [path, [key], ['country', key]].each do |argument|
+      error = assert_raises(RuntimeError) { reader.get_path('1.1.1.1', argument) }
       assert_match(/closed/, error.message)
     end
   end
@@ -423,6 +444,27 @@ class ReaderTest < Minitest::Test
     end
 
     assert_equal(:thrown, catch(:done) { reader.get(ip) })
+  end
+
+  def test_exception_while_parsing_is_not_replaced_after_close
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    [
+      ->(reader, ip) { reader.get(ip) },
+      ->(reader, ip) { reader.get_with_prefix_length(ip) },
+      ->(reader, ip) { reader.get_path(ip, ['country']) },
+    ].each do |call|
+      [Interrupt, SystemExit, IOError].each do |error|
+        reader = MaxMind::DB::Rust::Reader.new(test_db_path)
+        ip = IPAddr.new('1.1.1.1')
+        ip.define_singleton_method(:to_i) do
+          reader.close
+          raise error, 'parsing failed'
+        end
+
+        assert_raises(error) { call.call(reader, ip) }
+      end
+    end
   end
 
   def test_to_s_error_in_lookup_error_message_propagates

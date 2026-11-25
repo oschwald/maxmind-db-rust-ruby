@@ -126,15 +126,24 @@ fn signed_index_to_owned_path_element(index: isize) -> OwnedPathElement {
     }
 }
 
-pub(crate) fn path_cache_hash(path: RArray, ruby: &magnus::Ruby) -> Result<u64, Error> {
+/// `before_convert` runs before handling an element that is not a UTF-8 String,
+/// because converting it can call Ruby or fail.
+pub(crate) fn path_cache_hash(
+    path: RArray,
+    ruby: &magnus::Ruby,
+    before_convert: impl Fn() -> Result<(), Error>,
+) -> Result<u64, Error> {
     let mut hasher = FxHasher::default();
     path.len().hash(&mut hasher);
 
     for index in 0..path.len() {
         let item = path.entry::<Value>(index as isize)?;
+        if RString::from_value(item).is_none() {
+            before_convert()?;
+        }
         if let Some(key) = try_convert_optional::<RString>(item, ruby)? {
             0_u8.hash(&mut hasher);
-            hash_path_key(key, &mut hasher)?;
+            hash_path_key(key, &mut hasher, &before_convert)?;
             continue;
         }
         if let Some(index) = path_index(item, ruby)? {
@@ -151,12 +160,17 @@ pub(crate) fn path_cache_hash(path: RArray, ruby: &magnus::Ruby) -> Result<u64, 
     Ok(hasher.finish())
 }
 
-fn hash_path_key(key: RString, hasher: &mut FxHasher) -> Result<(), Error> {
+fn hash_path_key(
+    key: RString,
+    hasher: &mut FxHasher,
+    before_convert: impl Fn() -> Result<(), Error>,
+) -> Result<(), Error> {
     // SAFETY: the borrowed str is used only for immediate hashing and is not
     // stored across any call that could mutate or free the Ruby string.
     if let Some(key_str) = unsafe { key.test_as_str() } {
         key_str.hash(hasher);
     } else {
+        before_convert()?;
         key.to_string()?.hash(hasher);
     }
     Ok(())

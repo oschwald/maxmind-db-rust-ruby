@@ -401,7 +401,7 @@ impl Reader {
     fn get(&self, ip_address: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_before_load(&ruby, self.parse_lookup_ip(ip_address, &ruby))?;
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
         let guard = self.get_reader(&ruby)?;
         let reader_option = guard.as_ref();
@@ -414,8 +414,8 @@ impl Reader {
     fn get_path(&self, ip_address: Value, path: Value) -> Result<Value, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_before_load(&ruby, self.parse_lookup_ip(ip_address, &ruby))?;
-        let owned_path = self.parse_before_load(&ruby, self.parse_path(path, &ruby))?;
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
+        let owned_path = self.parse_path(path, &ruby)?;
         let path_elements = path_elements_from_owned_path(owned_path.as_ref());
 
         let guard = self.get_reader(&ruby)?;
@@ -433,7 +433,7 @@ impl Reader {
     fn get_with_prefix_length(&self, ip_address: Value) -> Result<RArray, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
 
-        let parsed_ip = self.parse_before_load(&ruby, self.parse_lookup_ip(ip_address, &ruby))?;
+        let parsed_ip = self.parse_lookup_ip(ip_address, &ruby)?;
 
         let guard = self.get_reader(&ruby)?;
         let reader_option = guard.as_ref();
@@ -555,8 +555,7 @@ impl Reader {
 
         // Check the arguments before returning an enumerator, so a bad network
         // fails here and not when iteration starts.
-        let network =
-            reader_self.parse_before_load(ruby, reader_self.parse_each_network(ruby, args))?;
+        let network = reader_self.parse_each_network(ruby, args)?;
 
         // If no block given, return enumerator. It gets the parsed network, not
         // the original argument, so iterating does not convert it again.
@@ -656,25 +655,12 @@ impl Reader {
         Ok(Some(network))
     }
 
-    /// Lookups parse their arguments, which can call into Ruby, before loading
-    /// the reader, so no guard is on the stack then (see NetworkIterator). A
-    /// closed reader is still reported ahead of a bad argument.
-    #[inline]
-    fn parse_before_load<T>(
-        &self,
-        ruby: &magnus::Ruby,
-        parsed: Result<T, Error>,
-    ) -> Result<T, Error> {
-        match parsed {
-            // A jump such as `throw` isn't an exception, so let it through.
-            Err(err) if err.value().is_some() && self.closed() => {
-                Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB))
-            }
-            parsed => parsed,
-        }
-    }
-
     /// Helper method to get the reader from the ArcSwapOption
+    ///
+    /// Parsing arguments can call into Ruby, and no guard may be on the stack
+    /// then (see NetworkIterator). So before such a call, methods call this and
+    /// drop the guard, which reports a closed reader ahead of a bad argument.
+    /// After parsing they call this again for the lookup.
     fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Guard<Option<Arc<ReaderSource>>>, Error> {
         let guard = self.reader.load();
         if guard.is_none() {
@@ -685,23 +671,23 @@ impl Reader {
 
     #[inline]
     fn parse_lookup_ip(&self, ip_address: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-        let parsed_ip = parse_ip_address_fast(ip_address, ruby)?;
-        self.validate_lookup_ip(ip_address, parsed_ip, ruby)
-    }
+        // A plain String is parsed without calling Ruby. Everything else can
+        // call Ruby, so check for a closed reader first (see get_reader).
+        let parsed_ip = match parse_plain_ip(ip_address) {
+            Some(parsed_ip) => parsed_ip,
+            None => {
+                self.get_reader(ruby)?;
+                parse_ip_with_ipaddr(ip_address, ruby)?
+            }
+        };
 
-    #[inline]
-    fn validate_lookup_ip(
-        &self,
-        ip_address: Value,
-        parsed_ip: IpAddr,
-        ruby: &magnus::Ruby,
-    ) -> Result<IpAddr, Error> {
-        validate_lookup_ip_for_version(
-            ip_address,
-            parsed_ip,
-            self.ip_version.load(Ordering::Relaxed),
-            ruby,
-        )
+        if self.ip_version.load(Ordering::Relaxed) == 4 && parsed_ip.is_ipv6() {
+            self.get_reader(ruby)?;
+            // Echo the argument as given, like the official gem, rather than
+            // the parsed address, which drops an IPv6 zone and normalizes.
+            return Err(ipv6_in_ipv4_error(ruby, ip_address));
+        }
+        Ok(parsed_ip)
     }
 
     #[inline]
@@ -738,8 +724,16 @@ impl Reader {
         path: Value,
         ruby: &magnus::Ruby,
     ) -> Result<Arc<[OwnedPathElement]>, Error> {
-        let path = path_array(path, ruby)?;
-        let hash = path_cache_hash(path, ruby)?;
+        // A plain path is hashed without calling Ruby. Anything else can call
+        // Ruby or fail, so check for a closed reader first (see get_reader).
+        let path = match RArray::from_value(path) {
+            Some(path) => path,
+            None => {
+                self.get_reader(ruby)?;
+                path_array(path, ruby)?
+            }
+        };
+        let hash = path_cache_hash(path, ruby, || self.get_reader(ruby).map(drop))?;
 
         if let Some(cached) = self.cached_path(path, hash, ruby)? {
             return Ok(cached);
@@ -814,22 +808,6 @@ impl Reader {
 // elements behind a Mutex. All Ruby object access happens inside method calls
 // while the Ruby VM is active.
 unsafe impl Send for Reader {}
-
-#[inline]
-fn validate_lookup_ip_for_version(
-    ip_address: Value,
-    parsed_ip: IpAddr,
-    ip_version: u16,
-    ruby: &magnus::Ruby,
-) -> Result<IpAddr, Error> {
-    if ip_version == 4 && matches!(parsed_ip, IpAddr::V6(_)) {
-        // Echo the argument as given, like the official gem, rather than the
-        // parsed address, which drops an IPv6 zone and normalizes.
-        Err(ipv6_in_ipv4_error(ruby, ip_address))
-    } else {
-        Ok(parsed_ip)
-    }
-}
 
 /// Lookup state shared by the block that `collect_each` passes to `each`.
 struct BatchState<F> {
@@ -1004,26 +982,23 @@ fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> 
     }
 }
 
-/// Parse IP address from Ruby value (String or IPAddr) - optimized version
-///
-/// Plain IPv4 and IPv6 strings are parsed in Rust. Anything else is handed to
-/// `IPAddr.new`, as the official gem does, so CIDR strings, scoped IPv6
-/// addresses and the `IPAddr::InvalidAddressError` raised for invalid input
-/// all match it.
+/// Parse a plain IPv4 or IPv6 String without calling Ruby. Returns `None` for
+/// anything else.
 #[inline(always)]
-fn parse_ip_address_fast(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
-    // Fast path: Try as RString first (most common case) - zero-copy
-    if let Some(rstring) = RString::from_value(value) {
-        // SAFETY: the &str is only used for parsing before any Ruby code can
-        // run and modify the string.
-        if let Some(ip) = unsafe { rstring.as_str() }.ok().and_then(parse_ip_string) {
-            return Ok(ip);
-        }
-        return ipaddr_to_ip(ipaddr_new(value, ruby)?, ruby);
-    }
+fn parse_plain_ip(value: Value) -> Option<IpAddr> {
+    let rstring = RString::from_value(value)?;
+    // SAFETY: the &str is only used for parsing before any Ruby code can run
+    // and modify the string. An invalidly encoded string is not a plain IP.
+    unsafe { rstring.test_as_str() }.and_then(parse_ip_string)
+}
 
-    let ipaddr_class = ipaddr_class(ruby)?;
-    if value.is_kind_of(ipaddr_class) {
+/// Parse an IP address that is not a plain String with `IPAddr`
+///
+/// Anything that is not an `IPAddr` is handed to `IPAddr.new`, as the official
+/// gem does, so CIDR strings, scoped IPv6 addresses and the
+/// `IPAddr::InvalidAddressError` raised for invalid input all match it.
+fn parse_ip_with_ipaddr(value: Value, ruby: &magnus::Ruby) -> Result<IpAddr, Error> {
+    if value.is_kind_of(ipaddr_class(ruby)?) {
         return ipaddr_to_ip(value, ruby);
     }
 
