@@ -2,6 +2,7 @@
 name = "maxmind_db_rust"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 authors = ["Gregory Oschwald <oschwald@gmail.com>"]
 description = "Rust-based Ruby binding for MaxMind DB - high-performance alternative to maxmind-db"
 license = "ISC"

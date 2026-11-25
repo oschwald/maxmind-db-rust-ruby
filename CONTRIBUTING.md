@@ -210,6 +210,7 @@ maxmind-db-rust-ruby/
 │       ├── reader.rs             # Reader class and lookups
 │       ├── convert.rs            # Argument type conversion
 │       ├── decoder.rs            # Decoding database values to Ruby objects
+│       ├── gvl.rs                # Running Rust work without the GVL
 │       ├── metadata.rs           # Metadata class
 │       ├── path.rs               # Path lookup support
 │       └── initialization.rs     # Ruby module and class setup

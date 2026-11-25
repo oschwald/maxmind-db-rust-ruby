@@ -41,7 +41,7 @@ gem install maxmind-db-rust
 ## Requirements
 
 - Ruby 3.3 or higher
-- Rust toolchain (for building from source)
+- Rust 1.85 or higher (for building from source)
 
 ## Usage
 

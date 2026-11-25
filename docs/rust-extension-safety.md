@@ -53,7 +53,10 @@ Ruby objects on demand when Ruby calls them.
 reader's closed-state representation. Methods load the source through
 `get_reader`; if it is gone, they raise the closed-reader runtime error. A
 method that already loaded the source may finish using that `Arc`, while later
-method calls see the closed state.
+method calls see the closed state. `get_many` and `get_many_path` load the source
+for each address, because no Rust-owned `Arc` may stay on a stack that Ruby can
+abandon. So they raise the closed-reader error if the reader is closed before the
+batch ends. `each` keeps its source in a Ruby object and continues after `close`.
 
 `close` leaves the metadata in place, so `Reader#metadata` keeps working after
 `close`, as in the official gem.

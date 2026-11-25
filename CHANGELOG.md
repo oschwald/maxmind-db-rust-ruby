@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** Ruby 3.3 or later is now required. Ruby 3.2 is end of life,
   and `magnus` 0.9 no longer builds against it.
+- **Breaking:** Building from source now requires Rust 1.85 or later, because
+  `magnus` 0.9 does.
+- **Breaking:** Lookups no longer call `to_s` on an argument that is neither a
+  String nor an `IPAddr`, such as a Symbol. They pass it to `IPAddr.new`, as the
+  `maxmind-db` gem does, which raises `IPAddr::AddressFamilyError`.
+- **Breaking:** `get_many` and `get_many_path` now raise the closed-reader
+  `RuntimeError` if the reader is closed before the last lookup, as `get` does.
+  Previously they finished with the database that was open at the start.
+- **Breaking:** `Reader.new` now converts the path as `File.open` does. A UTF-16
+  path raises `Encoding::CompatibilityError`, unless Ruby converts it because
+  `Encoding.default_internal` is set. On Linux, any other path that is not in
+  UTF-8 is converted to UTF-8 only if `Encoding.default_internal` is set.
 - Upgraded the `maxminddb` crate from 0.32.0 to 0.33.0, which fixes network
   iteration omitting some IPv6 networks and decoding of some four-byte data
   pointers.
@@ -38,10 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Reader` now matches the `maxmind-db` gem in several more calls:
   - `Reader.new` accepts a `Pathname` or any object with `to_path`, and its
     options as a positional Hash as well as keywords.
-  - `Reader.new` converts the path as `File.open` does. On Linux, a path that is
-    not in UTF-8 is no longer converted to UTF-8 unless
-    `Encoding.default_internal` is set, and a UTF-16 path raises
-    `Encoding::CompatibilityError`.
   - `Reader` can be subclassed. `new` returns an instance of the subclass and
     calls its `initialize`.
   - Errors opening or memory-mapping the database file raise the matching
@@ -50,8 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Invalid IP addresses raise `IPAddr::InvalidAddressError`, a subclass of
     `ArgumentError`. Lookups accept CIDR strings such as `"1.2.3.4/32"` and
     scoped IPv6 addresses such as `"fe80::1%eth0"`, as `IPAddr.new` does.
-    Arguments that are neither a String nor an `IPAddr` are passed to
-    `IPAddr.new` as well, rather than converted with `to_s` first.
   - `metadata` works after `close`.
 - `Reader#each(nil)` now iterates over the whole database, as documented,
   instead of raising `ArgumentError`. `each` now raises `ArgumentError` for
