@@ -81,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `require 'maxmind/db/rust'` no longer raises `LoadError` with the precompiled
   gems. The gem now loads the extension from the Ruby version directory that
   those gems use.
+- `require 'maxmind/db/rust'` no longer fails if the application defines a
+  top-level `DB`, such as Sequel's usual `DB` constant. It also no longer skips
+  defining its own classes if there is a top-level `Reader`.
 - The error raised for an IPv6 address in an IPv4-only database, and for an
   `IPAddr` that claims to be IPv4 but holds a larger address, now builds its
   message the way the `maxmind-db` gem does. An exception or `throw` from the
