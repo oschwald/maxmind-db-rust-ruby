@@ -538,12 +538,15 @@ impl Reader {
         self.reader.load().is_none()
     }
 
-    fn inspect(&self) -> String {
+    fn inspect(rb_self: Obj<Self>) -> String {
+        let reader_self = &*rb_self;
         format!(
-            "#<MaxMind::DB::Rust::Reader:0x{:x} @closed={} @ip_version={}>",
-            self as *const Self as usize,
-            self.closed(),
-            self.ip_version.load(Ordering::Relaxed),
+            "#<{}:0x{:x} @closed={} @ip_version={}>",
+            // SAFETY: the name is copied before Ruby code can run.
+            unsafe { rb_self.classname() },
+            reader_self as *const Self as usize,
+            reader_self.closed(),
+            reader_self.ip_version.load(Ordering::Relaxed),
         )
     }
 

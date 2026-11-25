@@ -305,6 +305,16 @@ class CompatibilityAuditTest < Minitest::Test
     MaxMind::DB::Rust::Reader.new(database).close
   end
 
+  def test_subclass_inspect_names_the_subclass
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    subclass = Class.new(MaxMind::DB::Rust::Reader)
+    reader = subclass.new(test_db_path)
+
+    assert_match(/\A##{Regexp.escape("<#{subclass}")}:0x[0-9a-f]+ @closed=false @ip_version=6>\z/, reader.inspect)
+    reader.close
+  end
+
   def test_invalid_ip_raises_ipaddr_invalid_address_error
     skip 'Test database not found' unless File.exist?(test_db_path)
 
