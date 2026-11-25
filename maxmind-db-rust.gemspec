@@ -6,7 +6,7 @@ Gem::Specification.new do |s|
                       'CHANGELOG.md', 'CONTRIBUTING.md']
   s.name        = 'maxmind-db-rust'
   s.summary     = 'Unofficial high-performance Rust-based MaxMind DB reader for Ruby'
-  s.version     = '0.7.0'
+  s.version     = '0.8.0'
 
   s.description = 'An unofficial high-performance Rust-based gem for reading MaxMind DB files. ' \
                   'Provides API compatibility with the official maxmind-db gem while leveraging Rust ' \
