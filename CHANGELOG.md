@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded the `maxminddb` crate from 0.32.0 to 0.33.0, which fixes network
   iteration omitting some IPv6 networks and decoding of some four-byte data
   pointers.
+- Opening a reader now builds a prefix index, which makes lookups that find no
+  record about 25% faster. Opening in a memory-mapped mode takes longer. With a
+  111 MB GeoIP2 City database, it went from about 7 to 150 microseconds. Reuse
+  readers rather than opening one for each request.
 - Upgraded `magnus` from 0.8 to 0.9 and updated other Rust dependencies.
 - The source gem now includes `Cargo.lock` and the release build profile, so
   installing from source builds the tested dependency versions with the same
