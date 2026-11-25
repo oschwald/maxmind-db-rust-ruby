@@ -588,77 +588,14 @@ impl Reader {
         Ok(ruby.qnil().as_value())
     }
 
-    /// Parses the optional network argument to `each`. Returns `None` when the
-    /// network is missing or nil, which means the whole database.
-    fn parse_each_network(
-        &self,
-        ruby: &magnus::Ruby,
-        args: &[Value],
-    ) -> Result<Option<IpNetwork>, Error> {
-        let args = scan_args::<(), (Option<Value>,), (), (), (), ()>(args)?;
-        let network_arg = match args.optional.0 {
-            Some(value) if !value.is_nil() => value,
-            _ => return Ok(None),
+    #[inline]
+    fn lookup_ip_value(&self, ruby: &magnus::Ruby, ip: Value) -> Result<Value, Error> {
+        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        let result = {
+            let guard = self.get_reader(ruby)?;
+            guard.as_ref().as_ref().unwrap().lookup(parsed_ip)
         };
-
-        // Accept both String and IPAddr objects
-        let network_str = if let Some(s) = try_convert_optional::<RString>(network_arg, ruby)? {
-            s.to_string()?
-        } else {
-            let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
-            if network_arg.is_kind_of(ipaddr_class) {
-                // IPAddr#to_s drops the prefix, so add it back as CIDR notation
-                let ip_str: String = network_arg.funcall("to_s", ())?;
-                let prefix_len: u8 = network_arg.funcall("prefix", ())?;
-                format!("{}/{}", ip_str, prefix_len)
-            } else {
-                // Try to call to_s on it (works for other objects)
-                let to_s_result: Value = network_arg.funcall("to_s", ())?;
-                try_convert_optional::<RString>(to_s_result, ruby)?
-                    .ok_or_else(|| {
-                        Error::new(
-                            ruby.exception_arg_error(),
-                            "Network parameter must be a String or IPAddr",
-                        )
-                    })?
-                    .to_string()?
-            }
-        };
-
-        let network = IpNetwork::from_str(&network_str).map_err(|e| {
-            Error::new(
-                ruby.exception_arg_error(),
-                format!("Invalid network CIDR '{}': {}", network_str, e),
-            )
-        })?;
-
-        // Validate network matches database IP version
-        // IPv4 in IPv6 DB is OK (IPv4-mapped), IPv6 in IPv6 DB is OK
-        if let (4, IpNetwork::V6(_)) = (self.ip_version.load(Ordering::Relaxed), network) {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                format!(
-                    "Cannot search for IPv6 network '{}' in an IPv4-only database",
-                    network_str
-                ),
-            ));
-        }
-
-        Ok(Some(network))
-    }
-
-    /// Helper method to get the reader from the ArcSwapOption
-    ///
-    /// Parsing arguments can call into Ruby, and no guard may be on the stack
-    /// then (see NetworkIterator). So before such a call, methods call this and
-    /// drop the guard, which reports a closed reader ahead of a bad argument.
-    /// After parsing they call this again for the lookup.
-    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Guard<Option<Arc<ReaderSource>>>, Error> {
-        let guard = self.reader.load();
-        if guard.is_none() {
-            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
-        }
-        Ok(guard)
+        lookup_result_to_value(ruby, result, "Database lookup failed")
     }
 
     #[inline]
@@ -682,50 +619,18 @@ impl Reader {
         Ok(parsed_ip)
     }
 
-    #[inline]
-    fn lookup_ip_value(&self, ruby: &magnus::Ruby, ip: Value) -> Result<Value, Error> {
-        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
-        let result = {
-            let guard = self.get_reader(ruby)?;
-            guard.as_ref().as_ref().unwrap().lookup(parsed_ip)
-        };
-        lookup_result_to_value(ruby, result, "Database lookup failed")
-    }
-
-    #[inline]
-    fn lookup_ip_path_value(
-        &self,
-        ruby: &magnus::Ruby,
-        ip: Value,
-        path_elements: &[PathElement<'_>],
-    ) -> Result<Value, Error> {
-        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
-        self.lookup_path_value(ruby, parsed_ip, path_elements)
-    }
-
-    /// Parses a plain IP address String that this database can look up. Returns
-    /// `None` for anything else. This never calls Ruby.
-    #[inline]
-    fn parse_plain_lookup_ip(&self, ip: Value) -> Option<IpAddr> {
-        parse_plain_ip(ip).filter(|ip| ip.is_ipv4() || self.ip_version.load(Ordering::Relaxed) != 4)
-    }
-
-    #[inline]
-    fn lookup_path_value(
-        &self,
-        ruby: &magnus::Ruby,
-        parsed_ip: IpAddr,
-        path_elements: &[PathElement<'_>],
-    ) -> Result<Value, Error> {
-        let result = {
-            let guard = self.get_reader(ruby)?;
-            guard
-                .as_ref()
-                .as_ref()
-                .unwrap()
-                .lookup_path(parsed_ip, path_elements)
-        };
-        lookup_result_to_value(ruby, result, "Database lookup failed")
+    /// Helper method to get the reader from the ArcSwapOption
+    ///
+    /// Parsing arguments can call into Ruby, and no guard may be on the stack
+    /// then (see NetworkIterator). So before such a call, methods call this and
+    /// drop the guard, which reports a closed reader ahead of a bad argument.
+    /// After parsing they call this again for the lookup.
+    fn get_reader(&self, ruby: &magnus::Ruby) -> Result<Guard<Option<Arc<ReaderSource>>>, Error> {
+        let guard = self.reader.load();
+        if guard.is_none() {
+            return Err(Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB));
+        }
+        Ok(guard)
     }
 
     fn parse_path(
@@ -808,6 +713,101 @@ impl Reader {
                 cache.pop_front();
             }
         }
+    }
+
+    #[inline]
+    fn lookup_path_value(
+        &self,
+        ruby: &magnus::Ruby,
+        parsed_ip: IpAddr,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Value, Error> {
+        let result = {
+            let guard = self.get_reader(ruby)?;
+            guard
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .lookup_path(parsed_ip, path_elements)
+        };
+        lookup_result_to_value(ruby, result, "Database lookup failed")
+    }
+
+    /// Parses a plain IP address String that this database can look up. Returns
+    /// `None` for anything else. This never calls Ruby.
+    #[inline]
+    fn parse_plain_lookup_ip(&self, ip: Value) -> Option<IpAddr> {
+        parse_plain_ip(ip).filter(|ip| ip.is_ipv4() || self.ip_version.load(Ordering::Relaxed) != 4)
+    }
+
+    #[inline]
+    fn lookup_ip_path_value(
+        &self,
+        ruby: &magnus::Ruby,
+        ip: Value,
+        path_elements: &[PathElement<'_>],
+    ) -> Result<Value, Error> {
+        let parsed_ip = self.parse_lookup_ip(ip, ruby)?;
+        self.lookup_path_value(ruby, parsed_ip, path_elements)
+    }
+
+    /// Parses the optional network argument to `each`. Returns `None` when the
+    /// network is missing or nil, which means the whole database.
+    fn parse_each_network(
+        &self,
+        ruby: &magnus::Ruby,
+        args: &[Value],
+    ) -> Result<Option<IpNetwork>, Error> {
+        let args = scan_args::<(), (Option<Value>,), (), (), (), ()>(args)?;
+        let network_arg = match args.optional.0 {
+            Some(value) if !value.is_nil() => value,
+            _ => return Ok(None),
+        };
+
+        // Accept both String and IPAddr objects
+        let network_str = if let Some(s) = try_convert_optional::<RString>(network_arg, ruby)? {
+            s.to_string()?
+        } else {
+            let ipaddr_class = ruby.class_object().const_get::<_, RClass>("IPAddr")?;
+            if network_arg.is_kind_of(ipaddr_class) {
+                // IPAddr#to_s drops the prefix, so add it back as CIDR notation
+                let ip_str: String = network_arg.funcall("to_s", ())?;
+                let prefix_len: u8 = network_arg.funcall("prefix", ())?;
+                format!("{}/{}", ip_str, prefix_len)
+            } else {
+                // Try to call to_s on it (works for other objects)
+                let to_s_result: Value = network_arg.funcall("to_s", ())?;
+                try_convert_optional::<RString>(to_s_result, ruby)?
+                    .ok_or_else(|| {
+                        Error::new(
+                            ruby.exception_arg_error(),
+                            "Network parameter must be a String or IPAddr",
+                        )
+                    })?
+                    .to_string()?
+            }
+        };
+
+        let network = IpNetwork::from_str(&network_str).map_err(|e| {
+            Error::new(
+                ruby.exception_arg_error(),
+                format!("Invalid network CIDR '{}': {}", network_str, e),
+            )
+        })?;
+
+        // Validate network matches database IP version
+        // IPv4 in IPv6 DB is OK (IPv4-mapped), IPv6 in IPv6 DB is OK
+        if let (4, IpNetwork::V6(_)) = (self.ip_version.load(Ordering::Relaxed), network) {
+            return Err(Error::new(
+                ruby.exception_arg_error(),
+                format!(
+                    "Cannot search for IPv6 network '{}' in an IPv4-only database",
+                    network_str
+                ),
+            ));
+        }
+
+        Ok(Some(network))
     }
 }
 

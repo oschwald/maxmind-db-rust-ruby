@@ -35,6 +35,74 @@ pub(crate) fn path_array(path: Value, ruby: &magnus::Ruby) -> Result<RArray, Err
     })
 }
 
+/// `before_convert` runs before handling an element that is not a UTF-8 String,
+/// because converting it can call Ruby or fail.
+pub(crate) fn path_cache_hash(
+    path: RArray,
+    ruby: &magnus::Ruby,
+    before_convert: impl Fn() -> Result<(), Error>,
+) -> Result<u64, Error> {
+    let mut hasher = FxHasher::default();
+    path.len().hash(&mut hasher);
+
+    for index in 0..path.len() {
+        let item = path.entry::<Value>(index as isize)?;
+        if RString::from_value(item).is_none() {
+            before_convert()?;
+        }
+        if let Some(key) = try_convert_optional::<RString>(item, ruby)? {
+            0_u8.hash(&mut hasher);
+            hash_path_key(key, &mut hasher, &before_convert)?;
+            continue;
+        }
+        if let Some(index) = path_index(item, ruby)? {
+            1_u8.hash(&mut hasher);
+            index.hash(&mut hasher);
+            continue;
+        }
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            "Path elements must be Strings or Integers",
+        ));
+    }
+
+    Ok(hasher.finish())
+}
+
+pub(crate) fn path_matches_cached(
+    path: RArray,
+    cached: &[OwnedPathElement],
+    ruby: &magnus::Ruby,
+) -> Result<bool, Error> {
+    if path.len() != cached.len() {
+        return Ok(false);
+    }
+
+    for (index, cached_element) in cached.iter().enumerate() {
+        let item = path.entry::<Value>(index as isize)?;
+        match cached_element {
+            OwnedPathElement::Key(expected) => {
+                let Some(key) = try_convert_optional::<RString>(item, ruby)? else {
+                    return Ok(false);
+                };
+                if !path_key_matches(key, expected)? {
+                    return Ok(false);
+                }
+            }
+            OwnedPathElement::Index(_) | OwnedPathElement::IndexFromEnd(_) => {
+                let Some(index) = path_index(item, ruby)? else {
+                    return Ok(false);
+                };
+                if signed_index_to_owned_path_element(index) != *cached_element {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
 pub(crate) fn parse_path_array(
     path: RArray,
     ruby: &magnus::Ruby,
@@ -57,6 +125,32 @@ pub(crate) fn parse_path_array(
     }
 
     Ok(elements)
+}
+
+pub(crate) fn path_elements_from_owned_path(path: &[OwnedPathElement]) -> Vec<PathElement<'_>> {
+    path.iter()
+        .map(|element| match element {
+            OwnedPathElement::Key(key) => PathElement::Key(key.as_str()),
+            OwnedPathElement::Index(index) => PathElement::Index(*index),
+            OwnedPathElement::IndexFromEnd(index) => PathElement::IndexFromEnd(*index),
+        })
+        .collect()
+}
+
+fn hash_path_key(
+    key: RString,
+    hasher: &mut FxHasher,
+    before_convert: impl Fn() -> Result<(), Error>,
+) -> Result<(), Error> {
+    // SAFETY: the borrowed str is used only for immediate hashing and is not
+    // stored across any call that could mutate or free the Ruby string.
+    if let Some(key_str) = unsafe { key.test_as_str() } {
+        key_str.hash(hasher);
+    } else {
+        before_convert()?;
+        key.to_string()?.hash(hasher);
+    }
+    Ok(())
 }
 
 /// Returns `None` if `item` is not an Integer or is too large for an index.
@@ -112,6 +206,16 @@ fn is_missing_to_i(err: &Error, item: Value, ruby: &magnus::Ruby) -> Result<bool
     }
 }
 
+fn path_key_matches(key: RString, expected: &str) -> Result<bool, Error> {
+    // SAFETY: the borrowed str is used only for immediate comparison and is not
+    // stored across any call that could mutate or free the Ruby string.
+    if let Some(key_str) = unsafe { key.test_as_str() } {
+        Ok(key_str == expected)
+    } else {
+        Ok(key.to_string()? == expected)
+    }
+}
+
 #[inline]
 fn signed_index_to_owned_path_element(index: isize) -> OwnedPathElement {
     if index >= 0 {
@@ -124,108 +228,4 @@ fn signed_index_to_owned_path_element(index: isize) -> OwnedPathElement {
             .unwrap_or(usize::MAX);
         OwnedPathElement::IndexFromEnd(index_from_end)
     }
-}
-
-/// `before_convert` runs before handling an element that is not a UTF-8 String,
-/// because converting it can call Ruby or fail.
-pub(crate) fn path_cache_hash(
-    path: RArray,
-    ruby: &magnus::Ruby,
-    before_convert: impl Fn() -> Result<(), Error>,
-) -> Result<u64, Error> {
-    let mut hasher = FxHasher::default();
-    path.len().hash(&mut hasher);
-
-    for index in 0..path.len() {
-        let item = path.entry::<Value>(index as isize)?;
-        if RString::from_value(item).is_none() {
-            before_convert()?;
-        }
-        if let Some(key) = try_convert_optional::<RString>(item, ruby)? {
-            0_u8.hash(&mut hasher);
-            hash_path_key(key, &mut hasher, &before_convert)?;
-            continue;
-        }
-        if let Some(index) = path_index(item, ruby)? {
-            1_u8.hash(&mut hasher);
-            index.hash(&mut hasher);
-            continue;
-        }
-        return Err(Error::new(
-            ruby.exception_arg_error(),
-            "Path elements must be Strings or Integers",
-        ));
-    }
-
-    Ok(hasher.finish())
-}
-
-fn hash_path_key(
-    key: RString,
-    hasher: &mut FxHasher,
-    before_convert: impl Fn() -> Result<(), Error>,
-) -> Result<(), Error> {
-    // SAFETY: the borrowed str is used only for immediate hashing and is not
-    // stored across any call that could mutate or free the Ruby string.
-    if let Some(key_str) = unsafe { key.test_as_str() } {
-        key_str.hash(hasher);
-    } else {
-        before_convert()?;
-        key.to_string()?.hash(hasher);
-    }
-    Ok(())
-}
-
-pub(crate) fn path_matches_cached(
-    path: RArray,
-    cached: &[OwnedPathElement],
-    ruby: &magnus::Ruby,
-) -> Result<bool, Error> {
-    if path.len() != cached.len() {
-        return Ok(false);
-    }
-
-    for (index, cached_element) in cached.iter().enumerate() {
-        let item = path.entry::<Value>(index as isize)?;
-        match cached_element {
-            OwnedPathElement::Key(expected) => {
-                let Some(key) = try_convert_optional::<RString>(item, ruby)? else {
-                    return Ok(false);
-                };
-                if !path_key_matches(key, expected)? {
-                    return Ok(false);
-                }
-            }
-            OwnedPathElement::Index(_) | OwnedPathElement::IndexFromEnd(_) => {
-                let Some(index) = path_index(item, ruby)? else {
-                    return Ok(false);
-                };
-                if signed_index_to_owned_path_element(index) != *cached_element {
-                    return Ok(false);
-                }
-            }
-        }
-    }
-
-    Ok(true)
-}
-
-fn path_key_matches(key: RString, expected: &str) -> Result<bool, Error> {
-    // SAFETY: the borrowed str is used only for immediate comparison and is not
-    // stored across any call that could mutate or free the Ruby string.
-    if let Some(key_str) = unsafe { key.test_as_str() } {
-        Ok(key_str == expected)
-    } else {
-        Ok(key.to_string()? == expected)
-    }
-}
-
-pub(crate) fn path_elements_from_owned_path(path: &[OwnedPathElement]) -> Vec<PathElement<'_>> {
-    path.iter()
-        .map(|element| match element {
-            OwnedPathElement::Key(key) => PathElement::Key(key.as_str()),
-            OwnedPathElement::Index(index) => PathElement::Index(*index),
-            OwnedPathElement::IndexFromEnd(index) => PathElement::IndexFromEnd(*index),
-        })
-        .collect()
 }
