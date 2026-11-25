@@ -813,6 +813,17 @@ impl Reader {
 // while the Ruby VM is active.
 unsafe impl Send for Reader {}
 
+fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {
+    if value.respond_to("each", false)? {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ruby.exception_arg_error(),
+            error_message.to_owned(),
+        ))
+    }
+}
+
 /// Lookup state shared by the block that `collect_each` passes to `each`.
 struct BatchState<F> {
     /// Cleared when `collect_each` returns. The block may outlive the call.
@@ -988,17 +999,6 @@ fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn ensure_enumerable(value: Value, ruby: &magnus::Ruby, error_message: &str) -> Result<(), Error> {
-    if value.respond_to("each", false)? {
-        Ok(())
-    } else {
-        Err(Error::new(
-            ruby.exception_arg_error(),
-            error_message.to_owned(),
-        ))
-    }
 }
 
 /// Parse a plain IPv4 or IPv6 String without calling Ruby. Returns `None` for

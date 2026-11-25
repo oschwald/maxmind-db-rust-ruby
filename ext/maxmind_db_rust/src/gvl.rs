@@ -12,21 +12,6 @@ struct Call<F, R> {
     result: Option<std::thread::Result<R>>,
 }
 
-unsafe extern "C" fn call_trampoline<F, R>(data: *mut c_void) -> *mut c_void
-where
-    F: FnOnce() -> R,
-{
-    // SAFETY: `data` is the `Call<F, R>` that `without_gvl` passed in, and it
-    // stays borrowed until `rb_thread_call_without_gvl` returns.
-    let call = unsafe { &mut *data.cast::<Call<F, R>>() };
-    if let Some(func) = call.func.take() {
-        // A panic must not unwind across the C frame, so catch it here and
-        // resume it once the GVL is held again.
-        call.result = Some(panic::catch_unwind(AssertUnwindSafe(func)));
-    }
-    ptr::null_mut()
-}
-
 /// Runs `func` with the GVL released so other Ruby threads can run.
 ///
 /// `func` must not touch any Ruby object or call any Ruby API, including
@@ -73,4 +58,19 @@ where
             unreachable!("rb_thread_call_without_gvl returned without running the callback")
         }
     }
+}
+
+unsafe extern "C" fn call_trampoline<F, R>(data: *mut c_void) -> *mut c_void
+where
+    F: FnOnce() -> R,
+{
+    // SAFETY: `data` is the `Call<F, R>` that `without_gvl` passed in, and it
+    // stays borrowed until `rb_thread_call_without_gvl` returns.
+    let call = unsafe { &mut *data.cast::<Call<F, R>>() };
+    if let Some(func) = call.func.take() {
+        // A panic must not unwind across the C frame, so catch it here and
+        // resume it once the GVL is held again.
+        call.result = Some(panic::catch_unwind(AssertUnwindSafe(func)));
+    }
+    ptr::null_mut()
 }
