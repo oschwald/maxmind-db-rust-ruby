@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
+require 'rbconfig'
 require 'test_helper'
+require 'timeout'
+require 'tmpdir'
 
 class ReaderTest < Minitest::Test
   TEST_DATA_DIR = File.join(__dir__, 'data', 'MaxMind-DB', 'test-data')
@@ -1029,6 +1032,79 @@ class ReaderTest < Minitest::Test
 
     assert reader.closed
     assert_operator operations.sum, :>, 0
+  end
+
+  # Each verify of the small test database is quick, so this mostly covers
+  # close landing between verify calls rather than in the middle of one.
+  def test_verify_from_threads_while_closing
+    skip 'Test database not found' unless File.exist?(test_db_path)
+
+    [MaxMind::DB::Rust::MODE_MMAP, MaxMind::DB::Rust::MODE_MEMORY].each do |mode|
+      reader = MaxMind::DB::Rust::Reader.new(test_db_path, mode: mode)
+      start_queue = Queue.new
+
+      threads = Array.new(4) do
+        Thread.new do
+          start_queue.pop
+          verified = 0
+          loop do
+            reader.verify
+            verified += 1
+          rescue RuntimeError => e
+            raise unless e.message.include?('closed')
+
+            break verified
+          end
+        end
+      end
+
+      threads.length.times { start_queue << true }
+      sleep 0.01
+      reader.close
+      verified = threads.map(&:value)
+
+      assert reader.closed
+      assert_operator verified.sum, :>, 0
+    end
+  end
+
+  # Opening a FIFO blocks until a writer opens it. The writer is a Ruby
+  # thread, so the open only finishes if the reader releases the GVL while it
+  # opens and reads the file. A regression would block the whole Ruby process,
+  # so the check runs in a child process that is killed after a deadline.
+  MEMORY_OPEN_FIFO_SCRIPT = <<~RUBY
+    require 'maxmind/db/rust'
+    fifo, db_path = ARGV
+    writer = Thread.new { File.binwrite(fifo, File.binread(db_path)) }
+    reader = MaxMind::DB::Rust::Reader.new(fifo, mode: MaxMind::DB::Rust::MODE_MEMORY)
+    writer.join
+    exit(reader.get('81.2.69.142').dig('country', 'iso_code') == 'GB' ? 0 : 1)
+  RUBY
+
+  def test_memory_mode_open_lets_other_threads_run
+    skip 'Test database not found' unless File.exist?(test_db_path)
+    skip 'FIFOs are not supported on this platform' if Gem.win_platform? || !File.respond_to?(:mkfifo)
+
+    Dir.mktmpdir do |dir|
+      fifo = File.join(dir, 'db.fifo')
+      File.mkfifo(fifo)
+      lib_dir = File.expand_path('../lib', __dir__)
+      pid = Process.spawn(RbConfig.ruby, '-I', lib_dir, '-e', MEMORY_OPEN_FIFO_SCRIPT, fifo, test_db_path)
+
+      status = begin
+        Timeout.timeout(10) { Process.wait2(pid).last }
+      rescue Timeout::Error
+        nil
+      end
+
+      refute_nil status, 'MODE_MEMORY open blocked other Ruby threads'
+      assert_predicate status, :success?
+    ensure
+      if pid && status.nil?
+        Process.kill('KILL', pid)
+        Process.wait(pid)
+      end
+    end
   end
 
   def test_each_after_close_reports_closed_reader

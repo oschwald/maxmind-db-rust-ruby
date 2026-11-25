@@ -53,6 +53,21 @@ method calls see the closed state.
 `close` leaves the metadata in place, so `Reader#metadata` keeps working after
 `close`, as in the official gem.
 
+## Releasing the GVL
+
+`Reader#verify` and the file open and read in `MODE_MEMORY` run through
+`gvl::without_gvl`, which calls `rb_thread_call_without_gvl`. Code inside it:
+
+- must not touch Ruby objects or call the Ruby API, including creating
+  exceptions. Return Rust values and errors, and convert them after the call.
+- must own what it uses, such as a cloned `Arc<ReaderSource>` or an owned
+  `PathBuf`, so a concurrent `close` or GC cannot free it.
+
+Panics are caught before they reach the C frame and resumed once the GVL is
+held again. No unblocking function is registered, so the work always runs to
+the end; pending interrupts such as `Thread#raise` are raised afterwards
+through `protect`.
+
 ## Memory-Mapped Files
 
 `MODE_AUTO`, `MODE_FILE`, and `MODE_MMAP` create a read-only file-backed memory

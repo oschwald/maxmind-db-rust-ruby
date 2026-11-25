@@ -1,4 +1,5 @@
 mod decoder;
+mod gvl;
 mod initialization;
 mod metadata;
 mod path;

@@ -1,5 +1,6 @@
 use crate::{
     decoder::RubyDecodedValue,
+    gvl::without_gvl,
     metadata::Metadata,
     path::{
         parse_path_array, path_array, path_cache_hash, path_elements_from_owned_path,
@@ -412,11 +413,15 @@ impl Reader {
 
     fn verify(&self) -> Result<bool, Error> {
         let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby method");
-        let guard = self.get_reader(&ruby)?;
-        let reader_option = guard.as_ref();
-        let reader = reader_option.as_ref().unwrap();
+        // Own a reference to the reader so a concurrent `close` cannot free it
+        // while verification runs without the GVL.
+        let reader = self
+            .reader
+            .load_full()
+            .ok_or_else(|| Error::new(ruby.exception_runtime_error(), ERR_CLOSED_DB))?;
 
-        reader.verify().map_err(|err| {
+        // Verification only decodes in Rust, so other Ruby threads can run.
+        without_gvl(|| reader.verify())?.map_err(|err| {
             invalid_database_exception(&format!("Database verification failed: {err}"))
         })?;
         Ok(true)
@@ -1123,11 +1128,24 @@ fn open_database_mmap(path: &Path) -> Result<ReaderSource, Error> {
 /// Open a MaxMind DB by loading entire file into memory (MODE_MEMORY)
 fn open_database_memory(path: &Path) -> Result<ReaderSource, Error> {
     let ruby = magnus::Ruby::get().expect("Ruby VM should be available in Ruby context");
-    let mut file = open_database_file(path, &ruby)?;
 
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|e| io_error(&ruby, &e, path))?;
+    // Opening and reading the file can block for a long time, so do it
+    // without the GVL and build any Ruby exception afterwards.
+    let buffer = without_gvl(|| {
+        let mut file = File::open(path).map_err(MemoryReadError::Io)?;
+        // Opening a directory succeeds on Unix; raise Errno::EISDIR up front,
+        // as `open_database_file` does.
+        if file.metadata().map_err(MemoryReadError::Io)?.is_dir() {
+            return Err(MemoryReadError::IsDirectory);
+        }
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).map_err(MemoryReadError::Io)?;
+        Ok(buffer)
+    })?
+    .map_err(|err| match err {
+        MemoryReadError::Io(e) => io_error(&ruby, &e, path),
+        MemoryReadError::IsDirectory => errno_error(&ruby, "EISDIR", path),
+    })?;
 
     reader_from_buffer(
         buffer,
@@ -1150,6 +1168,13 @@ fn reader_from_buffer(buffer: Vec<u8>, invalid_message: String) -> Result<Reader
         .map_err(|_| invalid_database_exception(invalid_message.as_str()))?;
 
     Ok(ReaderSource::Memory(reader))
+}
+
+/// Errors from the GVL-free part of `open_database_memory`, converted to Ruby
+/// exceptions once the GVL is held again.
+enum MemoryReadError {
+    Io(std::io::Error),
+    IsDirectory,
 }
 
 fn open_database_file(path: &Path, ruby: &magnus::Ruby) -> Result<File, Error> {

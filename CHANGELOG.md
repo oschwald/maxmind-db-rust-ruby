@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The source gem now includes `Cargo.lock` and the release build profile, so
   installing from source builds the tested dependency versions with the same
   optimizations as the native gems.
+- `Reader#verify` and opening a database in `MODE_MEMORY` now release Ruby's
+  global VM lock while they work, so other Ruby threads are no longer stalled.
+  Verification still cannot be interrupted part way through.
 
 ### Fixed
 
