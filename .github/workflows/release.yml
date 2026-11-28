@@ -127,7 +127,7 @@ jobs:
           ruby-version: ${{ matrix.ruby }}
 
       - name: Download gem artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gem-${{ matrix.platform }}
 
@@ -146,7 +146,7 @@ jobs:
         ruby: ["3.3", "3.4", "4.0"]
     steps:
       - name: Download gem artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gem-x86_64-linux-musl
 
@@ -224,7 +224,7 @@ jobs:
           ruby-version: "4.0"
 
       - name: Download all gem artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: all-gems
           pattern: gem-*
