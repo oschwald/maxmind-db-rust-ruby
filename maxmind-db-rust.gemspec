@@ -31,7 +31,7 @@ Gem::Specification.new do |s|
 
   s.add_development_dependency 'bigdecimal', '~> 4.0'
   s.add_development_dependency 'minitest', '~> 6.0'
-  s.add_development_dependency 'parallel', '< 2.0'
+  s.add_development_dependency 'parallel', '< 3.0'
   s.add_development_dependency 'rake', '~> 13.0'
   s.add_development_dependency 'rake-compiler', '~> 1.2'
   s.add_development_dependency 'rake-compiler-dock', '~> 1.5'
